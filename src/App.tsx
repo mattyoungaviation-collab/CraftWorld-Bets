@@ -86,6 +86,11 @@ function encodeTransfer(to: string, amount: bigint) {
   return `${ERC20_TRANSFER}${padAddress(to)}${padAmount(amount)}`;
 }
 
+function isValidAddress(address?: string | null) {
+  if (!address) return false;
+  return /^0x[a-fA-F0-9]{40}$/.test(address);
+}
+
 export default function App() {
   const [username, setUsername] = useState(() => localStorage.getItem("cw_bets_user") || "");
   const [wallet, setWallet] = useState<string | null>(null);
@@ -110,8 +115,9 @@ export default function App() {
     pickedName: string;
   } | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
-  const escrowAddress = BET_ESCROW_ADDRESS || SERVICE_FEE_ADDRESS;
+  const escrowAddress = BET_ESCROW_ADDRESS || "";
   const hasEscrowAddress = Boolean(BET_ESCROW_ADDRESS);
+  const escrowAddressValid = isValidAddress(escrowAddress);
   const walletConnectProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined;
   const walletConnectEnabled = Boolean(walletConnectProjectId);
 
@@ -414,8 +420,12 @@ export default function App() {
       setToast("Please acknowledge the betting terms to continue.");
       return;
     }
-    if (!escrowAddress) {
+    if (!hasEscrowAddress) {
       setToast("Missing escrow address. Set VITE_BET_ESCROW_ADDRESS to accept bets.");
+      return;
+    }
+    if (!escrowAddressValid) {
+      setToast("Escrow address is invalid. Use a 0x wallet address for VITE_BET_ESCROW_ADDRESS.");
       return;
     }
     setPlacing(true);
@@ -443,8 +453,8 @@ export default function App() {
         futureBet: pendingBet.type === "future",
       });
 
-      const escrowTx = await signAndSendTransfer(escrowAddress, rawWager);
       const feeTx = await signAndSendTransfer(SERVICE_FEE_ADDRESS, rawFee);
+      const escrowTx = await signAndSendTransfer(escrowAddress, rawWager);
 
       const payload = {
         user: username.trim(),
@@ -574,7 +584,12 @@ export default function App() {
             </div>
             {!hasEscrowAddress && (
               <div className="subtle" style={{ marginTop: 6 }}>
-                Set <strong>VITE_BET_ESCROW_ADDRESS</strong> to route wagers to escrow.
+                Set <strong>VITE_BET_ESCROW_ADDRESS</strong> (a 0x wallet address) to route wagers to escrow.
+              </div>
+            )}
+            {hasEscrowAddress && !escrowAddressValid && (
+              <div className="subtle" style={{ marginTop: 6 }}>
+                Escrow address must be a valid 0x wallet address.
               </div>
             )}
           </div>
@@ -653,7 +668,7 @@ export default function App() {
             masterpiece completes and results are verified.
           </li>
           <li>
-            Wagers are escrowed to <strong>{escrowAddress}</strong> on Ronin to fund payouts.
+            Wagers are escrowed to <strong>{escrowAddress || "an escrow wallet"}</strong> on Ronin to fund payouts.
           </li>
           <li>
             Betting is for entertainment only and does not constitute investment advice. CraftWorld Bets is not
@@ -811,7 +826,9 @@ export default function App() {
                   <div className="title">
                     {fmt(wagerAmount)} {COIN_SYMBOL}
                   </div>
-                  <div className="subtle">Escrowed for payouts to {escrowAddress}</div>
+                <div className="subtle">
+                  Escrowed for payouts to {escrowAddress || "an escrow wallet"}
+                </div>
                 </div>
                 <div>
                   <div className="label">Service Fee (5%)</div>
