@@ -52,6 +52,7 @@ const COIN_CONTRACT = "0x7DC167E270D5EF683CEAF4AFCDF2EFBDD667A9A7";
 const ERC20_BALANCE_OF = "0x70a08231";
 const ERC20_DECIMALS = "0x313ce567";
 const ERC20_TRANSFER = "0xa9059cbb";
+const ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const SERVICE_FEE_BPS = 500;
 const SERVICE_FEE_ADDRESS = "0xeED0491B506C78EA7fD10988B1E98A3C88e1C630";
 const BET_ESCROW_ADDRESS = import.meta.env.VITE_BET_ESCROW_ADDRESS as string | undefined;
@@ -84,6 +85,32 @@ function padAmount(amount: bigint) {
 
 function encodeTransfer(to: string, amount: bigint) {
   return `${ERC20_TRANSFER}${padAddress(to)}${padAmount(amount)}`;
+}
+
+function parseHexAmount(value?: string | null) {
+  if (!value) return null;
+  try {
+    return BigInt(value);
+  } catch {
+    return null;
+  }
+}
+
+function padTopicAddress(address: string) {
+  return `0x${padAddress(address)}`;
+}
+
+function findTransferAmount(logs: Array<{ topics?: string[]; data?: string; address?: string }>, to: string) {
+  const target = padTopicAddress(to);
+  for (const log of logs) {
+    if (!log || !log.topics || log.topics.length < 3) continue;
+    if (log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC) continue;
+    if (log.address?.toLowerCase() !== COIN_CONTRACT.toLowerCase()) continue;
+    if (log.topics[2]?.toLowerCase() !== target) continue;
+    const amount = parseHexAmount(log.data);
+    if (amount !== null) return amount;
+  }
+  return null;
 }
 
 function isValidAddress(address?: string | null) {
@@ -363,17 +390,59 @@ export default function App() {
   async function signAndSendTransfer(to: string, rawAmount: bigint) {
     if (!walletProvider || !wallet) throw new Error("Connect your wallet to sign the transaction.");
     const data = encodeTransfer(to, rawAmount);
+    const tx: Record<string, string> = {
+      from: wallet,
+      to: COIN_CONTRACT,
+      data,
+      value: "0x0",
+    };
+
+    try {
+      const [gas, gasPrice] = await Promise.all([
+        walletProvider.request({ method: "eth_estimateGas", params: [tx] }),
+        walletProvider.request({ method: "eth_gasPrice", params: [] }),
+      ]);
+      if (gas) tx.gas = String(gas);
+      if (gasPrice) tx.gasPrice = String(gasPrice);
+    } catch {
+      // Gas estimation isn't required for all wallets/providers, so fallback gracefully.
+    }
+
     const txHash = await walletProvider.request({
       method: "eth_sendTransaction",
-      params: [
-        {
-          from: wallet,
-          to: COIN_CONTRACT,
-          data,
-        },
-      ],
+      params: [tx],
     });
     return txHash as string;
+  }
+
+  async function waitForReceipt(txHash: string, timeoutMs = 180000) {
+    if (!walletProvider) throw new Error("Wallet provider not ready.");
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const receipt = await walletProvider.request({
+        method: "eth_getTransactionReceipt",
+        params: [txHash],
+      });
+      if (receipt) return receipt as { status?: string; logs?: Array<{ topics?: string[]; data?: string }> };
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+    }
+    throw new Error("Transaction confirmation timed out.");
+  }
+
+  async function confirmTransfer(txHash: string, to: string, expectedAmount: bigint) {
+    const receipt = await waitForReceipt(txHash);
+    if (!receipt?.status || receipt.status === "0x0") {
+      throw new Error("Transaction failed to confirm.");
+    }
+    const logs = receipt.logs || [];
+    const matched = findTransferAmount(logs, to);
+    if (matched === null) {
+      throw new Error("Transfer log not found for the expected recipient.");
+    }
+    if (matched !== expectedAmount) {
+      throw new Error("Transfer amount does not match the previewed bet.");
+    }
+    return receipt;
   }
 
   async function previewBet(payload: {
@@ -453,8 +522,15 @@ export default function App() {
         futureBet: pendingBet.type === "future",
       });
 
+      setToast("🧾 Please sign the service fee transfer in your wallet.");
       const feeTx = await signAndSendTransfer(SERVICE_FEE_ADDRESS, rawFee);
+      setToast("⏳ Waiting for fee transfer confirmation...");
+      await confirmTransfer(feeTx, SERVICE_FEE_ADDRESS, rawFee);
+
+      setToast("🧾 Please sign the wager transfer in your wallet.");
       const escrowTx = await signAndSendTransfer(escrowAddress, rawWager);
+      setToast("⏳ Waiting for wager transfer confirmation...");
+      await confirmTransfer(escrowTx, escrowAddress, rawWager);
 
       const payload = {
         user: username.trim(),
@@ -486,7 +562,7 @@ export default function App() {
       }
 
       setToast(
-        `✅ Bet placed: ${payload.user} → #${payload.position} = ${preview.pickedName} (${fmt(
+        `✅ Bet confirmed and funds received for ${payload.user} → #${payload.position} = ${preview.pickedName} (${fmt(
           payload.totalAmount
         )} ${COIN_SYMBOL})`
       );
@@ -498,7 +574,7 @@ export default function App() {
       }
       loadBets(mpId);
     } catch (e: any) {
-      setToast(`❌ ${e?.message || String(e)}`);
+      setToast(`❌ Bet failed. Please try again. ${e?.message || String(e)}`);
     } finally {
       setPlacing(false);
     }
