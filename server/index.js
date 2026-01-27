@@ -1,3 +1,4 @@
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import express from "express";
@@ -397,12 +398,17 @@ app.post("/api/settle/:masterpieceId", async (req, res) => {
   }
 });
 
-// ---- Serve built frontend ONLY in production ----
-if (process.env.NODE_ENV === "production") {
-  app.use(express.static(path.join(__dirname, "..", "dist")));
+// ---- Serve built frontend when available ----
+const distDir = path.join(__dirname, "..", "dist");
+if (fs.existsSync(distDir)) {
+  app.use(express.static(distDir));
 
   app.get("*", (_req, res) => {
-    res.sendFile(path.join(__dirname, "..", "dist", "index.html"));
+    res.sendFile(path.join(distDir, "index.html"));
+  });
+} else {
+  app.get("/", (_req, res) => {
+    res.json({ ok: true, message: "CraftWorld Bets API is running." });
   });
 }
 
