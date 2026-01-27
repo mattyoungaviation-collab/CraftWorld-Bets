@@ -4,6 +4,7 @@ import path from "path";
 import crypto from "crypto";
 
 export function makeStore(dataDir) {
+  fs.mkdirSync(dataDir, { recursive: true });
   const betsPath = path.join(dataDir, "bets.json");
   const resultsPath = path.join(dataDir, "results.json");
   const carryPath = path.join(dataDir, "carryover.json");
@@ -19,7 +20,11 @@ export function makeStore(dataDir) {
   }
 
   function writeJson(file, obj) {
-    fs.writeFileSync(file, JSON.stringify(obj, null, 2), "utf-8");
+    try {
+      fs.writeFileSync(file, JSON.stringify(obj, null, 2), "utf-8");
+    } catch (err) {
+      console.error(`Failed to persist ${file}:`, err);
+    }
   }
 
   const store = {
