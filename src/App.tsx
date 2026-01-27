@@ -37,6 +37,12 @@ type Bet = {
   pickedUid: string | null;
   pickedName: string | null;
   amount: number;
+  totalAmount?: number;
+  serviceFeeAmount?: number;
+  wagerAmount?: number;
+  walletAddress?: string | null;
+  escrowTx?: string | null;
+  feeTx?: string | null;
   createdAt: string;
   futureBet?: boolean;
 };
@@ -48,7 +54,7 @@ const ERC20_DECIMALS = "0x313ce567";
 const ERC20_TRANSFER = "0xa9059cbb";
 const SERVICE_FEE_BPS = 500;
 const SERVICE_FEE_ADDRESS = "0xeED0491B506C78EA7fD10988B1E98A3C88e1C630";
-const BET_ESCROW_ADDRESS = (import.meta.env.VITE_BET_ESCROW_ADDRESS as string | undefined) || SERVICE_FEE_ADDRESS;
+const BET_ESCROW_ADDRESS = import.meta.env.VITE_BET_ESCROW_ADDRESS as string | undefined;
 
 function fmt(n: number) {
   return n.toLocaleString();
@@ -104,6 +110,8 @@ export default function App() {
     pickedName: string;
   } | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
+  const escrowAddress = BET_ESCROW_ADDRESS || SERVICE_FEE_ADDRESS;
+  const hasEscrowAddress = Boolean(BET_ESCROW_ADDRESS);
   const walletConnectProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined;
   const walletConnectEnabled = Boolean(walletConnectProjectId);
 
@@ -248,16 +256,16 @@ export default function App() {
   const potForSelected = useMemo(() => {
     return bets
       .filter((b) => b.masterpieceId === mpId && b.position === selectedPos)
-      .reduce((sum, b) => sum + b.amount, 0);
+      .reduce((sum, b) => sum + (b.wagerAmount ?? b.amount), 0);
   }, [bets, mpId, selectedPos]);
 
   const oddsByUid = useMemo(() => {
     const filtered = bets.filter((b) => b.masterpieceId === mpId && b.position === selectedPos);
-    const pot = filtered.reduce((sum, b) => sum + b.amount, 0);
+    const pot = filtered.reduce((sum, b) => sum + (b.wagerAmount ?? b.amount), 0);
     const stakeByUid = new Map<string, number>();
     for (const b of filtered) {
       if (!b.pickedUid) continue;
-      stakeByUid.set(b.pickedUid, (stakeByUid.get(b.pickedUid) || 0) + b.amount);
+      stakeByUid.set(b.pickedUid, (stakeByUid.get(b.pickedUid) || 0) + (b.wagerAmount ?? b.amount));
     }
     const odds = new Map<string, number>();
     for (const [uid, stake] of stakeByUid) {
@@ -362,6 +370,29 @@ export default function App() {
     return txHash as string;
   }
 
+  async function previewBet(payload: {
+    user: string;
+    masterpieceId: number;
+    position: number;
+    pickedUid: string;
+    amount: number;
+    totalAmount: number;
+    serviceFeeAmount: number;
+    wagerAmount: number;
+    futureBet: boolean;
+  }) {
+    const r = await fetch("/api/bets/preview", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json();
+    if (!r.ok || j?.ok !== true) {
+      throw new Error(j?.error || "Unable to validate bet");
+    }
+    return j as { ok: true; pickedName: string; validationId: string };
+  }
+
   async function finalizeBet() {
     if (!username.trim()) {
       setToast("Type a username first.");
@@ -383,6 +414,10 @@ export default function App() {
       setToast("Please acknowledge the betting terms to continue.");
       return;
     }
+    if (!escrowAddress) {
+      setToast("Missing escrow address. Set VITE_BET_ESCROW_ADDRESS to accept bets.");
+      return;
+    }
     setPlacing(true);
     setToast("");
     try {
@@ -396,7 +431,19 @@ export default function App() {
       const feeAmount = Math.floor((totalAmount * SERVICE_FEE_BPS) / 10000);
       const wagerAmount = totalAmount - feeAmount;
 
-      const escrowTx = await signAndSendTransfer(BET_ESCROW_ADDRESS, rawWager);
+      const preview = await previewBet({
+        user: username.trim(),
+        masterpieceId: mpId,
+        position: selectedPos,
+        pickedUid: pendingBet.pickedUid,
+        amount: wagerAmount,
+        totalAmount,
+        serviceFeeAmount: feeAmount,
+        wagerAmount,
+        futureBet: pendingBet.type === "future",
+      });
+
+      const escrowTx = await signAndSendTransfer(escrowAddress, rawWager);
       const feeTx = await signAndSendTransfer(SERVICE_FEE_ADDRESS, rawFee);
 
       const payload = {
@@ -404,14 +451,17 @@ export default function App() {
         masterpieceId: mpId,
         position: selectedPos,
         pickedUid: pendingBet.pickedUid,
-        amount: totalAmount,
+        amount: wagerAmount,
+        totalAmount,
+        serviceFeeAmount: feeAmount,
+        wagerAmount,
         futureBet: pendingBet.type === "future",
         walletAddress: wallet,
         escrowTx,
         feeTx,
         serviceFeeBps: SERVICE_FEE_BPS,
-        serviceFeeAmount: feeAmount,
-        wagerAmount,
+        validationId: preview.validationId,
+        pickedName: preview.pickedName,
       };
 
       const r = await fetch("/api/bets", {
@@ -426,7 +476,9 @@ export default function App() {
       }
 
       setToast(
-        `✅ Bet placed: ${payload.user} → #${payload.position} = ${pendingBet.pickedName} (${fmt(payload.amount)} ${COIN_SYMBOL})`
+        `✅ Bet placed: ${payload.user} → #${payload.position} = ${preview.pickedName} (${fmt(
+          payload.totalAmount
+        )} ${COIN_SYMBOL})`
       );
       setPendingBet(null);
       setAcknowledged(false);
@@ -520,6 +572,11 @@ export default function App() {
             <div className="subtle" style={{ marginTop: 6 }}>
               {fmt(wagerAmount)} {COIN_SYMBOL} wager + {fmt(feeAmount)} {COIN_SYMBOL} fee (5%)
             </div>
+            {!hasEscrowAddress && (
+              <div className="subtle" style={{ marginTop: 6 }}>
+                Set <strong>VITE_BET_ESCROW_ADDRESS</strong> to route wagers to escrow.
+              </div>
+            )}
           </div>
         </div>
 
@@ -594,6 +651,9 @@ export default function App() {
           <li>
             Winners are paid back in {COIN_SYMBOL} to the same wallet address that placed the bet, after the
             masterpiece completes and results are verified.
+          </li>
+          <li>
+            Wagers are escrowed to <strong>{escrowAddress}</strong> on Ronin to fund payouts.
           </li>
           <li>
             Betting is for entertainment only and does not constitute investment advice. CraftWorld Bets is not
@@ -688,21 +748,29 @@ export default function App() {
             <div>User</div>
             <div>Pick</div>
             <div>Pos</div>
-            <div>Amount</div>
+            <div>Wager</div>
           </div>
           {bets.length === 0 && <div className="empty">No bets yet.</div>}
-          {bets.map((bet) => (
-            <div className="table-row static" key={bet.id}>
-              <div className="subtle">{new Date(bet.createdAt).toLocaleString()}</div>
-              <div>{bet.user}</div>
-              <div>{bet.pickedName || bet.pickedUid || "—"}</div>
-              <div>#{bet.position}</div>
-              <div className="numeric">
-                {fmt(bet.amount)} {COIN_SYMBOL}
-                <div className="subtle">{formatUsd((coinPrice || 0) * bet.amount)}</div>
+          {bets.map((bet) => {
+            const wager = bet.wagerAmount ?? bet.amount;
+            const total = bet.totalAmount ?? bet.amount;
+            const fee = bet.serviceFeeAmount ?? Math.max(total - wager, 0);
+            return (
+              <div className="table-row static" key={bet.id}>
+                <div className="subtle">{new Date(bet.createdAt).toLocaleString()}</div>
+                <div>{bet.user}</div>
+                <div>{bet.pickedName || bet.pickedUid || "—"}</div>
+                <div>#{bet.position}</div>
+                <div className="numeric">
+                  {fmt(wager)} {COIN_SYMBOL}
+                  <div className="subtle">
+                    Total {fmt(total)} {COIN_SYMBOL} • Fee {fmt(fee)} {COIN_SYMBOL}
+                  </div>
+                  <div className="subtle">{formatUsd((coinPrice || 0) * total)}</div>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
 
@@ -743,7 +811,7 @@ export default function App() {
                   <div className="title">
                     {fmt(wagerAmount)} {COIN_SYMBOL}
                   </div>
-                  <div className="subtle">Escrowed for payouts</div>
+                  <div className="subtle">Escrowed for payouts to {escrowAddress}</div>
                 </div>
                 <div>
                   <div className="label">Service Fee (5%)</div>
