@@ -180,15 +180,38 @@ export default function App() {
     return m;
   }
 
-  async function loadMasterpiece(id: number) {
+  async function loadCurrentMasterpiece(startId: number) {
     setLoading(true);
     setErr("");
+    const maxLookahead = 20;
+    let latest: { id: number; mp: Masterpiece } | null = null;
+
     try {
-      const m = await fetchMasterpiece(id);
-      setMp(m);
-    } catch (e: any) {
-      setErr(e?.message || String(e));
+      for (let offset = 0; offset < maxLookahead; offset += 1) {
+        const id = startId + offset;
+        const m = await fetchMasterpiece(id);
+        latest = { id, mp: m };
+        if (!isMasterpieceClosed(m)) {
+          setMpId(id);
+          setMp(m);
+          return;
+        }
+      }
+      if (latest) {
+        setMpId(latest.id);
+        setMp(latest.mp);
+        return;
+      }
       setMp(null);
+      setErr("No masterpiece data returned");
+    } catch (e: any) {
+      if (latest) {
+        setMpId(latest.id);
+        setMp(latest.mp);
+      } else {
+        setMp(null);
+        setErr(e?.message || String(e));
+      }
     } finally {
       setLoading(false);
     }
