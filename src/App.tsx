@@ -93,6 +93,10 @@ export default function App() {
     localStorage.setItem("cw_bets_user", username);
   }, [username]);
 
+  useEffect(() => {
+    if (!wallet) setCoinBalance(null);
+  }, [wallet]);
+
   async function loadMasterpiece(id: number) {
     setLoading(true);
     setErr("");
@@ -361,7 +365,13 @@ export default function App() {
           </div>
           <div className="price-pill">
             <div>{COIN_SYMBOL} balance</div>
-            <strong>{coinBalance !== null ? formatTokenAmount(coinBalance, coinDecimals) : "—"}</strong>
+            <strong>
+              {wallet
+                ? coinBalance !== null
+                  ? formatTokenAmount(coinBalance, coinDecimals)
+                  : "Loading..."
+                : "Wallet not connected"}
+            </strong>
           </div>
           <button
             className="btn btn-primary"
