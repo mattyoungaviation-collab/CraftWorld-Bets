@@ -55,7 +55,9 @@ const ERC20_TRANSFER = "0xa9059cbb";
 const ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const SERVICE_FEE_BPS = 500;
 const SERVICE_FEE_ADDRESS = "0xeED0491B506C78EA7fD10988B1E98A3C88e1C630";
-const BET_ESCROW_ADDRESS = import.meta.env.VITE_BET_ESCROW_ADDRESS as string | undefined;
+const BET_ESCROW_ADDRESS =
+  (import.meta.env.VITE_BET_ESCROW_ADDRESS as string | undefined) ||
+  "0x47181FeB839dE75697064CC558eBb470E86449b9";
 
 function fmt(n: number) {
   return n.toLocaleString();
@@ -499,7 +501,9 @@ export default function App() {
     }
     setPlacing(true);
     setToast("");
+    let transfersConfirmed = false;
     try {
+      let pendingId: string | null = null;
       const totalAmount = Math.floor(Number(amount));
       if (totalAmount <= 0) {
         throw new Error("Bet amount must be greater than zero.");
@@ -522,6 +526,28 @@ export default function App() {
         futureBet: pendingBet.type === "future",
       });
 
+      const pendingRes = await fetch("/api/bets/pending", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          user: username.trim(),
+          masterpieceId: mpId,
+          position: selectedPos,
+          pickedUid: pendingBet.pickedUid,
+          amount: wagerAmount,
+          totalAmount,
+          serviceFeeAmount: feeAmount,
+          wagerAmount,
+          futureBet: pendingBet.type === "future",
+          validationId: preview.validationId,
+        }),
+      });
+      const pendingJson = await pendingRes.json();
+      if (!pendingRes.ok || pendingJson?.ok !== true) {
+        throw new Error(pendingJson?.error || "Unable to reserve bet before transfer.");
+      }
+      pendingId = pendingJson?.pendingId;
+
       setToast("🧾 Please sign the service fee transfer in your wallet.");
       const feeTx = await signAndSendTransfer(SERVICE_FEE_ADDRESS, rawFee);
       setToast("⏳ Waiting for fee transfer confirmation...");
@@ -532,28 +558,19 @@ export default function App() {
       setToast("⏳ Waiting for wager transfer confirmation...");
       await confirmTransfer(escrowTx, escrowAddress, rawWager);
 
-      const payload = {
-        user: username.trim(),
-        masterpieceId: mpId,
-        position: selectedPos,
-        pickedUid: pendingBet.pickedUid,
-        amount: wagerAmount,
-        totalAmount,
-        serviceFeeAmount: feeAmount,
-        wagerAmount,
-        futureBet: pendingBet.type === "future",
-        walletAddress: wallet,
-        escrowTx,
-        feeTx,
-        serviceFeeBps: SERVICE_FEE_BPS,
-        validationId: preview.validationId,
-        pickedName: preview.pickedName,
-      };
-
-      const r = await fetch("/api/bets", {
+      transfersConfirmed = true;
+      if (!pendingId) {
+        throw new Error("Pending bet was not created. No funds were moved.");
+      }
+      const r = await fetch("/api/bets/confirm", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          pendingId,
+          walletAddress: wallet,
+          escrowTx,
+          feeTx,
+        }),
       });
 
       const j = await r.json();
@@ -562,8 +579,8 @@ export default function App() {
       }
 
       setToast(
-        `✅ Bet confirmed and funds received for ${payload.user} → #${payload.position} = ${preview.pickedName} (${fmt(
-          payload.totalAmount
+        `✅ Bet confirmed and funds received for ${username.trim()} → #${selectedPos} = ${preview.pickedName} (${fmt(
+          totalAmount
         )} ${COIN_SYMBOL})`
       );
       setPendingBet(null);
@@ -574,7 +591,24 @@ export default function App() {
       }
       loadBets(mpId);
     } catch (e: any) {
-      setToast(`❌ Bet failed. Please try again. ${e?.message || String(e)}`);
+      const message = e?.message || String(e);
+      if (message && message.includes("User rejected")) {
+        setToast("❌ Bet canceled. No funds were moved.");
+        return;
+      }
+      if (message && message.includes("Transfer")) {
+        setToast(`❌ Bet failed. Please try again. ${message}`);
+        return;
+      }
+      if (message && message.includes("reserve")) {
+        setToast(`❌ Bet failed before transfer. No funds were moved. ${message}`);
+        return;
+      }
+      if (transfersConfirmed) {
+        setToast(`⚠️ Transfers confirmed, but the bet was not recorded. Please retry to finalize. ${message}`);
+        return;
+      }
+      setToast(`❌ Bet failed. Please try again. ${message}`);
     } finally {
       setPlacing(false);
     }
