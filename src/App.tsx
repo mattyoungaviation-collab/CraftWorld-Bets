@@ -147,6 +147,11 @@ export default function App() {
     pickedUid: string;
     pickedName: string;
   } | null>(null);
+  const [positionsOpen, setPositionsOpen] = useState(false);
+  const [positionsLoading, setPositionsLoading] = useState(false);
+  const [positionsError, setPositionsError] = useState<string>("");
+  const [allBets, setAllBets] = useState<Bet[]>([]);
+  const [positionsUpdatedAt, setPositionsUpdatedAt] = useState<string>("");
   const [acknowledged, setAcknowledged] = useState(false);
   const escrowAddress = BET_ESCROW_ADDRESS || "";
   const hasEscrowAddress = Boolean(BET_ESCROW_ADDRESS);
@@ -165,6 +170,22 @@ export default function App() {
   useEffect(() => {
     if (!wallet) setCoinBalance(null);
   }, [wallet]);
+
+  useEffect(() => {
+    if (!wallet) return;
+    const registerWallet = async () => {
+      try {
+        await fetch("/api/wallets/register", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ walletAddress: wallet, user: username.trim() || null }),
+        });
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    registerWallet();
+  }, [wallet, username]);
 
   function isMasterpieceClosed(masterpiece: Masterpiece) {
     const dynamite = masterpiece.resources?.find((resource) => resource.symbol === "DYNAMITE");
@@ -227,6 +248,22 @@ export default function App() {
     }
   }
 
+  async function loadAllBets() {
+    setPositionsLoading(true);
+    setPositionsError("");
+    try {
+      const r = await fetch("/api/bets");
+      const j = await r.json();
+      setAllBets(j?.bets || []);
+      setPositionsUpdatedAt(new Date().toISOString());
+    } catch (e) {
+      console.error(e);
+      setPositionsError("Unable to load positions for this wallet.");
+    } finally {
+      setPositionsLoading(false);
+    }
+  }
+
   async function loadCoinPrice() {
     try {
       const r = await fetch(
@@ -252,6 +289,12 @@ export default function App() {
   useEffect(() => {
     loadBets(mpId);
   }, [mpId]);
+
+  useEffect(() => {
+    if (!positionsOpen) return;
+    loadAllBets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [positionsOpen, wallet]);
 
   useEffect(() => {
     if (!wallet || !walletProvider) return;
@@ -350,6 +393,41 @@ export default function App() {
     }
     return { odds, pot };
   }, [bets, mpId, selectedPos]);
+
+  const walletBets = useMemo(() => {
+    if (!wallet) return [];
+    const lower = wallet.toLowerCase();
+    return allBets.filter((bet) => (bet.walletAddress || "").toLowerCase() === lower);
+  }, [allBets, wallet]);
+
+  const marketSummary = useMemo(() => {
+    const summary = new Map<string, { pot: number; stakeByUid: Map<string, number> }>();
+    for (const bet of allBets) {
+      const wager = bet.wagerAmount ?? bet.amount;
+      const key = `${bet.masterpieceId}:${bet.position}`;
+      if (!summary.has(key)) {
+        summary.set(key, { pot: 0, stakeByUid: new Map() });
+      }
+      const entry = summary.get(key)!;
+      entry.pot += wager;
+      if (bet.pickedUid) {
+        entry.stakeByUid.set(bet.pickedUid, (entry.stakeByUid.get(bet.pickedUid) || 0) + wager);
+      }
+    }
+    return summary;
+  }, [allBets]);
+
+  function getLiveValue(bet: Bet) {
+    const wager = bet.wagerAmount ?? bet.amount;
+    if (!bet.pickedUid) return { pot: 0, value: 0 };
+    const key = `${bet.masterpieceId}:${bet.position}`;
+    const entry = marketSummary.get(key);
+    if (!entry) return { pot: 0, value: 0 };
+    const stake = entry.stakeByUid.get(bet.pickedUid) || 0;
+    if (stake <= 0) return { pot: entry.pot, value: 0 };
+    const rawValue = (entry.pot * wager) / stake;
+    return { pot: entry.pot, value: Math.min(rawValue, entry.pot) };
+  }
 
   async function connectWallet() {
     setToast("");
@@ -754,6 +832,14 @@ export default function App() {
           <button className="btn btn-primary" onClick={() => setFutureMode(true)}>
             Future Masterpiece Bet
           </button>
+          <button
+            className="btn"
+            onClick={() => setPositionsOpen((open) => !open)}
+            disabled={!wallet}
+            title={wallet ? undefined : "Connect your wallet to view your positions."}
+          >
+            {positionsOpen ? "Hide My Positions" : "Show My Positions"}
+          </button>
           <div className="status-pill">
             <span>Status</span>
             <strong>
@@ -782,6 +868,75 @@ export default function App() {
           </div>
         )}
       </section>
+
+      {positionsOpen && (
+        <section className="card">
+          <div className="positions-header">
+            <div>
+              <div className="section-title">My Positions</div>
+              <div className="subtle">
+                Showing bets tied to wallet {wallet ? `${wallet.slice(0, 6)}...${wallet.slice(-4)}` : "—"}.
+                {positionsUpdatedAt && ` Updated ${new Date(positionsUpdatedAt).toLocaleTimeString()}.`}
+              </div>
+            </div>
+            <div className="positions-actions">
+              <button className="btn" onClick={loadAllBets} disabled={positionsLoading}>
+                {positionsLoading ? "Refreshing..." : "Refresh Positions"}
+              </button>
+            </div>
+          </div>
+          {positionsError && (
+            <div className="toast toast-error">
+              <b>Error:</b> {positionsError}
+            </div>
+          )}
+          <div className="table positions-table">
+            <div className="table-header">
+              <div>Time</div>
+              <div>MP</div>
+              <div>Pos</div>
+              <div>Pick</div>
+              <div>Bet Cost</div>
+              <div>Wager Size</div>
+              <div>Fees</div>
+              <div>Live Value</div>
+            </div>
+            {walletBets.length === 0 && <div className="empty">No bets found for this wallet yet.</div>}
+            {walletBets.map((bet) => {
+              const wager = bet.wagerAmount ?? bet.amount;
+              const total = bet.totalAmount ?? bet.amount;
+              const fee = bet.serviceFeeAmount ?? Math.max(total - wager, 0);
+              const { pot, value } = getLiveValue(bet);
+              return (
+                <div className="table-row static" key={`${bet.id}-position`}>
+                  <div className="subtle">{new Date(bet.createdAt).toLocaleString()}</div>
+                  <div>{bet.masterpieceId}</div>
+                  <div>#{bet.position}</div>
+                  <div>{bet.pickedName || bet.pickedUid || "—"}</div>
+                  <div className="numeric">
+                    {fmt(total)} {COIN_SYMBOL}
+                    <div className="subtle">{formatUsd((coinPrice || 0) * total)}</div>
+                  </div>
+                  <div className="numeric">
+                    {fmt(wager)} {COIN_SYMBOL}
+                    <div className="subtle">{formatUsd((coinPrice || 0) * wager)}</div>
+                  </div>
+                  <div className="numeric">
+                    {fmt(fee)} {COIN_SYMBOL}
+                    <div className="subtle">{formatUsd((coinPrice || 0) * fee)}</div>
+                  </div>
+                  <div className="numeric">
+                    {fmt(value)} {COIN_SYMBOL}
+                    <div className="subtle">
+                      Pot {fmt(pot)} {COIN_SYMBOL} • {formatUsd((coinPrice || 0) * value)}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       <section className="card summary-card">
         <div>
