@@ -522,12 +522,14 @@ export default function App() {
         futureBet: pendingBet.type === "future",
       });
 
+      setToast("🧾 Please sign the service fee transfer in your wallet.");
       const feeTx = await signAndSendTransfer(SERVICE_FEE_ADDRESS, rawFee);
       setToast("⏳ Waiting for fee transfer confirmation...");
       await confirmTransfer(feeTx, SERVICE_FEE_ADDRESS, rawFee);
 
+      setToast("🧾 Please sign the wager transfer in your wallet.");
       const escrowTx = await signAndSendTransfer(escrowAddress, rawWager);
-      setToast("⏳ Waiting for escrow transfer confirmation...");
+      setToast("⏳ Waiting for wager transfer confirmation...");
       await confirmTransfer(escrowTx, escrowAddress, rawWager);
 
       const payload = {
@@ -560,7 +562,7 @@ export default function App() {
       }
 
       setToast(
-        `✅ Bet placed: ${payload.user} → #${payload.position} = ${preview.pickedName} (${fmt(
+        `✅ Bet confirmed and funds received for ${payload.user} → #${payload.position} = ${preview.pickedName} (${fmt(
           payload.totalAmount
         )} ${COIN_SYMBOL})`
       );
@@ -572,7 +574,7 @@ export default function App() {
       }
       loadBets(mpId);
     } catch (e: any) {
-      setToast(`❌ ${e?.message || String(e)}`);
+      setToast(`❌ Bet failed. Please try again. ${e?.message || String(e)}`);
     } finally {
       setPlacing(false);
     }
