@@ -75,7 +75,7 @@ app.get("/api/masterpiece/:id", async (req, res) => {
 
 app.post("/api/bets", async (req, res) => {
   try {
-    const { user, masterpieceId, position, pickedUid, amount } = req.body || {};
+    const { user, masterpieceId, position, pickedUid, amount, futureBet } = req.body || {};
 
     if (!user || typeof user !== "string") return res.status(400).json({ error: "user required" });
 
@@ -90,14 +90,25 @@ app.post("/api/bets", async (req, res) => {
     const amt = Number(amount);
     if (!Number.isInteger(amt) || amt <= 0) return res.status(400).json({ error: "amount must be a positive integer" });
 
-    // Pull live leaderboard (source of truth)
-    const mpJson = await fetchMasterpiece(mpId);
-    const leaderboard = mpJson?.data?.masterpiece?.leaderboard || [];
+    let pickedName = pickedUid;
+    let isClosed = false;
 
-    const pickedRow = leaderboard.find((r) => r?.profile?.uid === pickedUid);
-    if (!pickedRow) return res.status(400).json({ error: "pickedUid not found in current leaderboard" });
+    try {
+      const mpJson = await fetchMasterpiece(mpId);
+      const mp = mpJson?.data?.masterpiece;
+      if (mp?.collectedPoints >= mp?.requiredPoints) isClosed = true;
+      const leaderboard = mp?.leaderboard || [];
 
-    const pickedName = pickedRow?.profile?.displayName || pickedUid;
+      if (!futureBet) {
+        const pickedRow = leaderboard.find((r) => r?.profile?.uid === pickedUid);
+        if (!pickedRow) return res.status(400).json({ error: "pickedUid not found in current leaderboard" });
+        pickedName = pickedRow?.profile?.displayName || pickedUid;
+      }
+    } catch (e) {
+      if (!futureBet) return res.status(500).json({ error: "masterpiece lookup failed" });
+    }
+
+    if (isClosed) return res.status(400).json({ error: "betting is closed for this masterpiece" });
 
     const bet = {
       id: newId(),
@@ -108,6 +119,7 @@ app.post("/api/bets", async (req, res) => {
       pickedName,
       amount: amt,
       createdAt: new Date().toISOString(),
+      futureBet: Boolean(futureBet),
     };
 
     store.bets.push(bet);
