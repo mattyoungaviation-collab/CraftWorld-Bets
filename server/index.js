@@ -1,7 +1,16 @@
+import path from "path";
+import serveStatic from "serve-static";
+import { fileURLToPath } from "url";
 import express from "express";
 
 const app = express();
 app.use(express.json());
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Serve the built frontend (Vite build output)
+app.use(serveStatic(path.join(__dirname, "..", "dist")));
+
 
 const GRAPHQL_URL = "https://craft-world.gg/graphql";
 
@@ -65,6 +74,10 @@ app.get("/api/masterpiece/:id", async (req, res) => {
 });
 
 const port = process.env.PORT || 3000;
+app.get("*", (_req, res) => {
+  res.sendFile(path.join(__dirname, "..", "dist", "index.html"));
+});
+
 app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
 });
