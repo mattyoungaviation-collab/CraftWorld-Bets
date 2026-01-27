@@ -9,6 +9,7 @@ export function makeStore(dataDir) {
   const carryPath = path.join(dataDir, "carryover.json");
   const housePath = path.join(dataDir, "house.json");
   const pendingPath = path.join(dataDir, "pending.json");
+  const walletsPath = path.join(dataDir, "wallets.json");
 
   function readJson(file, fallback) {
     try {
@@ -28,6 +29,7 @@ export function makeStore(dataDir) {
     results: readJson(resultsPath, {}),
     carryover: readJson(carryPath, { "1": 0, "2": 0, "3": 0 }),
     house: readJson(housePath, { total: 0, byMasterpiece: {} }),
+    wallets: readJson(walletsPath, {}),
   };
 
   function persist() {
@@ -36,6 +38,7 @@ export function makeStore(dataDir) {
     writeJson(resultsPath, store.results);
     writeJson(carryPath, store.carryover);
     writeJson(housePath, store.house);
+    writeJson(walletsPath, store.wallets);
   }
 
   return { store, persist };

@@ -30,6 +30,7 @@ const GRAPHQL_URL = "https://craft-world.gg/graphql";
 const SERVICE_FEE_BPS = 500;
 const VALIDATION_TTL_MS = 5 * 60 * 1000;
 const validations = new Map();
+const WALLET_BET_LIMIT = 1000;
 
 const MASTERPIECE_QUERY = `
   query Masterpiece($id: ID) {
@@ -81,6 +82,40 @@ async function fetchMasterpiece(id) {
   return json;
 }
 
+function normalizeWallet(address) {
+  if (!address || typeof address !== "string") return null;
+  return address.trim().toLowerCase();
+}
+
+function ensureWalletRecord(address) {
+  const normalized = normalizeWallet(address);
+  if (!normalized) return null;
+  const existing = store.wallets[normalized];
+  if (existing) {
+    existing.lastSeenAt = new Date().toISOString();
+    return existing;
+  }
+  const record = {
+    address: normalized,
+    firstSeenAt: new Date().toISOString(),
+    lastSeenAt: new Date().toISOString(),
+    betIds: [],
+  };
+  store.wallets[normalized] = record;
+  return record;
+}
+
+function attachBetToWallet(address, betId) {
+  const record = ensureWalletRecord(address);
+  if (!record) return;
+  if (!record.betIds.includes(betId)) {
+    record.betIds.push(betId);
+    if (record.betIds.length > WALLET_BET_LIMIT) {
+      record.betIds = record.betIds.slice(-WALLET_BET_LIMIT);
+    }
+  }
+}
+
 // ---- API routes FIRST ----
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
@@ -89,6 +124,34 @@ app.get("/api/masterpiece/:id", async (req, res) => {
     const id = Number(req.params.id);
     const json = await fetchMasterpiece(id);
     res.json(json);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.post("/api/wallets/register", (req, res) => {
+  try {
+    const { address } = req.body || {};
+    const normalized = normalizeWallet(address);
+    if (!normalized) return res.status(400).json({ error: "address required" });
+
+    const record = ensureWalletRecord(normalized);
+    persist();
+
+    return res.json({ ok: true, wallet: record });
+  } catch (e) {
+    return res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get("/api/wallets/:address/bets", (req, res) => {
+  try {
+    const normalized = normalizeWallet(req.params.address);
+    if (!normalized) return res.status(400).json({ error: "invalid address" });
+    const wallet = ensureWalletRecord(normalized);
+    const bets = store.bets.filter((b) => (b.walletAddress || "").toLowerCase() === normalized);
+    persist();
+    res.json({ ok: true, wallet, bets });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
@@ -247,6 +310,9 @@ app.post("/api/bets", async (req, res) => {
     };
 
     store.bets.push(bet);
+    if (bet.walletAddress) {
+      attachBetToWallet(bet.walletAddress, bet.id);
+    }
     persist();
 
     res.json({ ok: true, bet });
@@ -327,6 +393,9 @@ app.post("/api/bets/confirm", async (req, res) => {
 
     store.pendingBets.splice(idx, 1);
     store.bets.push(bet);
+    if (bet.walletAddress) {
+      attachBetToWallet(bet.walletAddress, bet.id);
+    }
     persist();
 
     res.json({ ok: true, bet });
@@ -338,11 +407,13 @@ app.post("/api/bets/confirm", async (req, res) => {
 app.get("/api/bets", (req, res) => {
   const mpId = req.query.masterpieceId ? Number(req.query.masterpieceId) : null;
   const position = req.query.position ? Number(req.query.position) : null;
+  const walletAddress = req.query.walletAddress ? String(req.query.walletAddress).toLowerCase() : null;
 
   let out = store.bets;
 
   if (Number.isInteger(mpId)) out = out.filter((b) => b.masterpieceId === mpId);
   if ([1, 2, 3].includes(position)) out = out.filter((b) => b.position === position);
+  if (walletAddress) out = out.filter((b) => (b.walletAddress || "").toLowerCase() === walletAddress);
 
   res.json({ ok: true, bets: out });
 });
