@@ -363,15 +363,27 @@ export default function App() {
   async function signAndSendTransfer(to: string, rawAmount: bigint) {
     if (!walletProvider || !wallet) throw new Error("Connect your wallet to sign the transaction.");
     const data = encodeTransfer(to, rawAmount);
+    const tx: Record<string, string> = {
+      from: wallet,
+      to: COIN_CONTRACT,
+      data,
+      value: "0x0",
+    };
+
+    try {
+      const [gas, gasPrice] = await Promise.all([
+        walletProvider.request({ method: "eth_estimateGas", params: [tx] }),
+        walletProvider.request({ method: "eth_gasPrice", params: [] }),
+      ]);
+      if (gas) tx.gas = String(gas);
+      if (gasPrice) tx.gasPrice = String(gasPrice);
+    } catch {
+      // Gas estimation isn't required for all wallets/providers, so fallback gracefully.
+    }
+
     const txHash = await walletProvider.request({
       method: "eth_sendTransaction",
-      params: [
-        {
-          from: wallet,
-          to: COIN_CONTRACT,
-          data,
-        },
-      ],
+      params: [tx],
     });
     return txHash as string;
   }
