@@ -67,9 +67,18 @@ function padAddress(address: string) {
   return address.toLowerCase().replace("0x", "").padStart(64, "0");
 }
 
+async function loadWalletConnectProvider() {
+  const module = await import(
+    /* @vite-ignore */
+    "https://unpkg.com/@walletconnect/ethereum-provider@2.11.2/dist/esm/index.js"
+  );
+  return module.default;
+}
+
 export default function App() {
   const [username, setUsername] = useState(() => localStorage.getItem("cw_bets_user") || "");
   const [wallet, setWallet] = useState<string | null>(null);
+  const [walletProvider, setWalletProvider] = useState<any>(null);
   const [mpId, setMpId] = useState<number>(55);
   const [mp, setMp] = useState<Masterpiece | null>(null);
   const [loading, setLoading] = useState(false);
@@ -143,14 +152,12 @@ export default function App() {
   }, [mpId]);
 
   useEffect(() => {
-    if (!wallet) return;
+    if (!wallet || !walletProvider) return;
     let isActive = true;
 
     async function loadCoinMeta() {
       try {
-        const ethereum = (window as any)?.ethereum;
-        if (!ethereum) return;
-        const decimalsHex = await ethereum.request({
+        const decimalsHex = await walletProvider.request({
           method: "eth_call",
           params: [{ to: COIN_CONTRACT, data: ERC20_DECIMALS }, "latest"],
         });
@@ -163,10 +170,8 @@ export default function App() {
 
     async function loadCoinBalance() {
       try {
-        const ethereum = (window as any)?.ethereum;
-        if (!ethereum) return;
         const data = `${ERC20_BALANCE_OF}${padAddress(wallet)}`;
-        const balanceHex = await ethereum.request({
+        const balanceHex = await walletProvider.request({
           method: "eth_call",
           params: [{ to: COIN_CONTRACT, data }, "latest"],
         });
@@ -184,7 +189,7 @@ export default function App() {
       isActive = false;
       clearInterval(interval);
     };
-  }, [wallet]);
+  }, [wallet, walletProvider]);
 
   const top100 = useMemo(() => (mp?.leaderboard || []).slice(0, 100), [mp]);
   const hasLiveBoard = top100.length > 0;
@@ -222,14 +227,34 @@ export default function App() {
   async function connectWallet() {
     setToast("");
     try {
-      const ethereum = (window as any)?.ethereum;
-      if (!ethereum) {
-        setToast("❌ No wallet detected. Install a Ronin-compatible wallet.");
+      const wcProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined;
+      if (!wcProjectId) {
+        setToast("❌ Missing VITE_WALLETCONNECT_PROJECT_ID. Add it to your environment to use WalletConnect.");
         return;
       }
-      const accounts = await ethereum.request({ method: "eth_requestAccounts" });
+
+      const EthereumProvider = await loadWalletConnectProvider();
+      const provider = await EthereumProvider.init({
+        projectId: wcProjectId,
+        chains: [2020],
+        optionalChains: [2020],
+        showQrModal: true,
+        metadata: {
+          name: "CraftWorld Bets",
+          description: "Betting desk for CraftWorld masterpieces.",
+          url: window.location.origin,
+          icons: ["https://walletconnect.com/walletconnect-logo.png"],
+        },
+        rpcMap: {
+          2020: "https://api.roninchain.com/rpc",
+        },
+      });
+
+      await provider.enable();
+      const accounts = provider.accounts;
       const acct = accounts?.[0];
       if (acct) {
+        setWalletProvider(provider);
         setWallet(acct);
         if (!username) setUsername(acct);
       }
