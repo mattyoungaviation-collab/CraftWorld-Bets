@@ -124,7 +124,11 @@ export default function App() {
   const [username, setUsername] = useState(() => localStorage.getItem("cw_bets_user") || "");
   const [wallet, setWallet] = useState<string | null>(null);
   const [walletProvider, setWalletProvider] = useState<any>(null);
-  const [mpId, setMpId] = useState<number>(55);
+  const [mpId, setMpId] = useState<number>(() => {
+    const stored = localStorage.getItem("cw_bets_mp_id");
+    const parsed = stored ? Number(stored) : NaN;
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 55;
+  });
   const [mp, setMp] = useState<Masterpiece | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string>("");
@@ -155,21 +159,73 @@ export default function App() {
   }, [username]);
 
   useEffect(() => {
+    localStorage.setItem("cw_bets_mp_id", String(mpId));
+  }, [mpId]);
+
+  useEffect(() => {
     if (!wallet) setCoinBalance(null);
   }, [wallet]);
+
+  function isMasterpieceClosed(masterpiece: Masterpiece) {
+    const dynamite = masterpiece.resources?.find((resource) => resource.symbol === "DYNAMITE");
+    return dynamite ? dynamite.amount >= dynamite.target : masterpiece.collectedPoints >= masterpiece.requiredPoints;
+  }
+
+  async function fetchMasterpiece(id: number) {
+    const r = await fetch(`/api/masterpiece/${id}`);
+    const j = await r.json();
+    if (!r.ok) throw new Error(j?.error || "Unable to load masterpiece");
+    const m = j?.data?.masterpiece as Masterpiece | undefined;
+    if (!m) throw new Error("No masterpiece data returned");
+    return m;
+  }
 
   async function loadMasterpiece(id: number) {
     setLoading(true);
     setErr("");
     try {
-      const r = await fetch(`/api/masterpiece/${id}`);
-      const j = await r.json();
-      const m = j?.data?.masterpiece as Masterpiece | undefined;
-      if (!m) throw new Error("No masterpiece data returned");
+      const m = await fetchMasterpiece(id);
       setMp(m);
     } catch (e: any) {
       setErr(e?.message || String(e));
       setMp(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadCurrentMasterpiece(startId: number) {
+    setLoading(true);
+    setErr("");
+    const maxLookahead = 20;
+    let latest: { id: number; mp: Masterpiece } | null = null;
+
+    try {
+      for (let offset = 0; offset < maxLookahead; offset += 1) {
+        const id = startId + offset;
+        const m = await fetchMasterpiece(id);
+        latest = { id, mp: m };
+        if (!isMasterpieceClosed(m)) {
+          setMpId(id);
+          setMp(m);
+          return;
+        }
+      }
+      if (latest) {
+        setMpId(latest.id);
+        setMp(latest.mp);
+        return;
+      }
+      setMp(null);
+      setErr("No masterpiece data returned");
+    } catch (e: any) {
+      if (latest) {
+        setMpId(latest.id);
+        setMp(latest.mp);
+      } else {
+        setMp(null);
+        setErr(e?.message || String(e));
+      }
     } finally {
       setLoading(false);
     }
@@ -199,7 +255,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    loadMasterpiece(mpId);
+    loadCurrentMasterpiece(mpId);
     loadBets(mpId);
     loadCoinPrice();
     const interval = setInterval(() => loadCoinPrice(), 60000);
@@ -706,7 +762,7 @@ export default function App() {
         </div>
 
         <div className="actions">
-          <button className="btn" onClick={() => loadMasterpiece(mpId)} disabled={loading}>
+          <button className="btn" onClick={() => loadCurrentMasterpiece(mpId)} disabled={loading}>
             {loading ? "Refreshing..." : "Refresh Leaderboard"}
           </button>
           <button className="btn btn-primary" onClick={() => setFutureMode(true)}>
