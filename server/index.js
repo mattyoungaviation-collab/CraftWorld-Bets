@@ -19,7 +19,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // ---- persistence store ----
-const dataDir = path.join(__dirname, "data");
+const dataDir = process.env.BETS_DATA_DIR
+  ? path.resolve(process.env.BETS_DATA_DIR)
+  : path.join(__dirname, "data");
+fs.mkdirSync(dataDir, { recursive: true });
 const { store, persist } = makeStore(dataDir);
 
 // ---- Craft World GraphQL ----
