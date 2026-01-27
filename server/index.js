@@ -7,6 +7,14 @@ import { makeStore, newId, settleMarket } from "./betting.js";
 const app = express();
 app.use(express.json());
 
+process.on("unhandledRejection", (err) => {
+  console.error("Unhandled promise rejection:", err);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception:", err);
+});
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
