@@ -1,3 +1,4 @@
+import EthereumProvider from "@walletconnect/ethereum-provider";
 import { useEffect, useMemo, useState } from "react";
 import "./App.css";
 
@@ -67,12 +68,6 @@ function padAddress(address: string) {
   return address.toLowerCase().replace("0x", "").padStart(64, "0");
 }
 
-async function loadWalletConnectProvider() {
-  // @ts-ignore - dynamic URL import handled by Vite at runtime.
-  const module = await import("https://unpkg.com/@walletconnect/ethereum-provider@2.11.2/dist/esm/index.js");
-  return (module as any).default;
-}
-
 export default function App() {
   const [username, setUsername] = useState(() => localStorage.getItem("cw_bets_user") || "");
   const [wallet, setWallet] = useState<string | null>(null);
@@ -91,10 +86,16 @@ export default function App() {
   const [coinPrice, setCoinPrice] = useState<number | null>(null);
   const [coinDecimals, setCoinDecimals] = useState<number>(18);
   const [coinBalance, setCoinBalance] = useState<bigint | null>(null);
+  const walletConnectProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined;
+  const walletConnectEnabled = Boolean(walletConnectProjectId);
 
   useEffect(() => {
     localStorage.setItem("cw_bets_user", username);
   }, [username]);
+
+  useEffect(() => {
+    if (!wallet) setCoinBalance(null);
+  }, [wallet]);
 
   async function loadMasterpiece(id: number) {
     setLoading(true);
@@ -190,6 +191,30 @@ export default function App() {
     };
   }, [wallet, walletProvider]);
 
+  useEffect(() => {
+    if (!walletProvider) return;
+
+    const handleAccountsChanged = (accounts: string[]) => {
+      const next = accounts?.[0] || null;
+      setWallet(next);
+      if (!next) setCoinBalance(null);
+    };
+
+    const handleDisconnect = () => {
+      setWallet(null);
+      setWalletProvider(null);
+      setCoinBalance(null);
+    };
+
+    walletProvider.on?.("accountsChanged", handleAccountsChanged);
+    walletProvider.on?.("disconnect", handleDisconnect);
+
+    return () => {
+      walletProvider.removeListener?.("accountsChanged", handleAccountsChanged);
+      walletProvider.removeListener?.("disconnect", handleDisconnect);
+    };
+  }, [walletProvider]);
+
   const top100 = useMemo(() => (mp?.leaderboard || []).slice(0, 100), [mp]);
   const hasLiveBoard = top100.length > 0;
   const dynamiteResource = useMemo(
@@ -226,15 +251,13 @@ export default function App() {
   async function connectWallet() {
     setToast("");
     try {
-      const wcProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined;
-      if (!wcProjectId) {
+      if (!walletConnectProjectId) {
         setToast("❌ Missing VITE_WALLETCONNECT_PROJECT_ID. Add it to your environment to use WalletConnect.");
         return;
       }
 
-      const EthereumProvider = await loadWalletConnectProvider();
       const provider = await EthereumProvider.init({
-        projectId: wcProjectId,
+        projectId: walletConnectProjectId,
         chains: [2020],
         optionalChains: [2020],
         showQrModal: true,
@@ -260,6 +283,29 @@ export default function App() {
     } catch (e: any) {
       setToast(`❌ ${e?.message || String(e)}`);
     }
+  }
+
+  async function disconnectWallet() {
+    setToast("");
+    try {
+      if (walletProvider?.disconnect) {
+        await walletProvider.disconnect();
+      }
+    } catch (e: any) {
+      setToast(`❌ ${e?.message || String(e)}`);
+    } finally {
+      setWallet(null);
+      setWalletProvider(null);
+      setCoinBalance(null);
+    }
+  }
+
+  async function handleWalletAction() {
+    if (wallet) {
+      await disconnectWallet();
+      return;
+    }
+    await connectWallet();
   }
 
   async function placeBet(picked: LeaderRow) {
@@ -366,11 +412,31 @@ export default function App() {
           </div>
           <div className="price-pill">
             <div>{COIN_SYMBOL} balance</div>
-            <strong>{coinBalance !== null ? formatTokenAmount(coinBalance, coinDecimals) : "—"}</strong>
+            <strong>
+              {wallet
+                ? coinBalance !== null
+                  ? formatTokenAmount(coinBalance, coinDecimals)
+                  : "Loading..."
+                : "Wallet not connected"}
+            </strong>
           </div>
-          <button className="btn btn-primary" onClick={connectWallet}>
-            {wallet ? `Connected: ${wallet.slice(0, 6)}...${wallet.slice(-4)}` : "Connect Wallet"}
+          <button
+            className="btn btn-primary"
+            onClick={handleWalletAction}
+            disabled={!walletConnectEnabled}
+            title={
+              walletConnectEnabled
+                ? undefined
+                : "WalletConnect requires VITE_WALLETCONNECT_PROJECT_ID in your environment."
+            }
+          >
+            {wallet
+              ? `Disconnect: ${wallet.slice(0, 6)}...${wallet.slice(-4)}`
+              : "Connect Wallet"}
           </button>
+          {!walletConnectEnabled && (
+            <div className="subtle">Set VITE_WALLETCONNECT_PROJECT_ID in your .env to enable wallet connections.</div>
+          )}
         </div>
       </header>
 
