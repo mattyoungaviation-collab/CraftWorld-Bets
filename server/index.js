@@ -60,6 +60,30 @@ const MASTERPIECE_QUERY = `
   }
 `;
 
+function normalizeWalletAddress(address) {
+  if (!address || typeof address !== "string") return null;
+  const trimmed = address.trim().toLowerCase();
+  return /^0x[a-f0-9]{40}$/.test(trimmed) ? trimmed : null;
+}
+
+function upsertWallet(address, user) {
+  const walletAddress = normalizeWalletAddress(address);
+  if (!walletAddress) return;
+  const now = new Date().toISOString();
+  const existing = store.wallets.find((entry) => entry.address === walletAddress);
+  if (existing) {
+    existing.lastSeenAt = now;
+    if (user) existing.user = user;
+    return;
+  }
+  store.wallets.push({
+    address: walletAddress,
+    user: user || null,
+    firstSeenAt: now,
+    lastSeenAt: now,
+  });
+}
+
 async function fetchMasterpiece(id) {
   const jwt = process.env.CRAFTWORLD_JWT;
   if (!jwt) throw new Error("Missing CRAFTWORLD_JWT env var");
@@ -83,6 +107,17 @@ async function fetchMasterpiece(id) {
 
 // ---- API routes FIRST ----
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
+
+app.post("/api/wallets/register", (req, res) => {
+  const user = typeof req.body?.user === "string" ? req.body.user.trim() : null;
+  upsertWallet(req.body?.walletAddress, user);
+  if (!store.wallets.find((entry) => entry.address === normalizeWalletAddress(req.body?.walletAddress))) {
+    return res.status(400).json({ error: "walletAddress must be a valid 0x address" });
+  }
+  persist();
+
+  res.json({ ok: true });
+});
 
 app.get("/api/masterpiece/:id", async (req, res) => {
   try {
@@ -324,6 +359,10 @@ app.post("/api/bets/confirm", async (req, res) => {
       escrowTx: escrowTx || null,
       feeTx: feeTx || null,
     };
+
+    if (walletAddress) {
+      upsertWallet(walletAddress, pendingBet.user);
+    }
 
     store.pendingBets.splice(idx, 1);
     store.bets.push(bet);
