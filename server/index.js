@@ -193,11 +193,14 @@ app.post("/api/settle/:masterpieceId", async (req, res) => {
   }
 });
 
-// ---- Serve built frontend AFTER API ----
-app.use(express.static(path.join(__dirname, "..", "dist")));
-app.get("*", (_req, res) => {
-  res.sendFile(path.join(__dirname, "..", "dist", "index.html"));
-});
+// ---- Serve built frontend ONLY in production ----
+if (process.env.NODE_ENV === "production") {
+  app.use(express.static(path.join(__dirname, "..", "dist")));
+
+  app.get("*", (_req, res) => {
+    res.sendFile(path.join(__dirname, "..", "dist", "index.html"));
+  });
+}
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Server running on http://localhost:${port}`));
