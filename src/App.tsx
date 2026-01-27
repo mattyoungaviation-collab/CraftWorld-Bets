@@ -217,6 +217,43 @@ export default function App() {
     }
   }
 
+  async function loadCurrentMasterpiece(startId: number) {
+    setLoading(true);
+    setErr("");
+    const maxLookahead = 20;
+    let latest: { id: number; mp: Masterpiece } | null = null;
+
+    try {
+      for (let offset = 0; offset < maxLookahead; offset += 1) {
+        const id = startId + offset;
+        const m = await fetchMasterpiece(id);
+        latest = { id, mp: m };
+        if (!isMasterpieceClosed(m)) {
+          setMpId(id);
+          setMp(m);
+          return;
+        }
+      }
+      if (latest) {
+        setMpId(latest.id);
+        setMp(latest.mp);
+        return;
+      }
+      setMp(null);
+      setErr("No masterpiece data returned");
+    } catch (e: any) {
+      if (latest) {
+        setMpId(latest.id);
+        setMp(latest.mp);
+      } else {
+        setMp(null);
+        setErr(e?.message || String(e));
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function loadBets(id: number) {
     try {
       const r = await fetch(`/api/bets?masterpieceId=${id}`);
