@@ -71,3 +71,7 @@ export default defineConfig([
   },
 ])
 ```
+
+## Server persistence
+
+The API stores bets on disk. Set `BETS_DATA_DIR` to a persistent volume path (for example, `/var/data` on Render) so redeploys keep existing bets. If unset, the server falls back to `server/data`.
