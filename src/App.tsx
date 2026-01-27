@@ -191,6 +191,30 @@ export default function App() {
     };
   }, [wallet, walletProvider]);
 
+  useEffect(() => {
+    if (!walletProvider) return;
+
+    const handleAccountsChanged = (accounts: string[]) => {
+      const next = accounts?.[0] || null;
+      setWallet(next);
+      if (!next) setCoinBalance(null);
+    };
+
+    const handleDisconnect = () => {
+      setWallet(null);
+      setWalletProvider(null);
+      setCoinBalance(null);
+    };
+
+    walletProvider.on?.("accountsChanged", handleAccountsChanged);
+    walletProvider.on?.("disconnect", handleDisconnect);
+
+    return () => {
+      walletProvider.removeListener?.("accountsChanged", handleAccountsChanged);
+      walletProvider.removeListener?.("disconnect", handleDisconnect);
+    };
+  }, [walletProvider]);
+
   const top100 = useMemo(() => (mp?.leaderboard || []).slice(0, 100), [mp]);
   const hasLiveBoard = top100.length > 0;
   const dynamiteResource = useMemo(
@@ -259,6 +283,29 @@ export default function App() {
     } catch (e: any) {
       setToast(`❌ ${e?.message || String(e)}`);
     }
+  }
+
+  async function disconnectWallet() {
+    setToast("");
+    try {
+      if (walletProvider?.disconnect) {
+        await walletProvider.disconnect();
+      }
+    } catch (e: any) {
+      setToast(`❌ ${e?.message || String(e)}`);
+    } finally {
+      setWallet(null);
+      setWalletProvider(null);
+      setCoinBalance(null);
+    }
+  }
+
+  async function handleWalletAction() {
+    if (wallet) {
+      await disconnectWallet();
+      return;
+    }
+    await connectWallet();
   }
 
   async function placeBet(picked: LeaderRow) {
@@ -375,7 +422,7 @@ export default function App() {
           </div>
           <button
             className="btn btn-primary"
-            onClick={connectWallet}
+            onClick={handleWalletAction}
             disabled={!walletConnectEnabled}
             title={
               walletConnectEnabled
@@ -383,7 +430,9 @@ export default function App() {
                 : "WalletConnect requires VITE_WALLETCONNECT_PROJECT_ID in your environment."
             }
           >
-            {wallet ? `Connected: ${wallet.slice(0, 6)}...${wallet.slice(-4)}` : "Connect Wallet"}
+            {wallet
+              ? `Disconnect: ${wallet.slice(0, 6)}...${wallet.slice(-4)}`
+              : "Connect Wallet"}
           </button>
           {!walletConnectEnabled && (
             <div className="subtle">Set VITE_WALLETCONNECT_PROJECT_ID in your .env to enable wallet connections.</div>
