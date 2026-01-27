@@ -1,3 +1,4 @@
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import express from "express";
@@ -5,6 +6,14 @@ import { makeStore, newId, settleMarket } from "./betting.js";
 
 const app = express();
 app.use(express.json());
+
+process.on("unhandledRejection", (err) => {
+  console.error("Unhandled promise rejection:", err);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception:", err);
+});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -243,6 +252,86 @@ app.post("/api/bets", async (req, res) => {
   }
 });
 
+app.post("/api/bets/pending", async (req, res) => {
+  try {
+    const { validationId, totalAmount, serviceFeeAmount, wagerAmount } = req.body || {};
+    let validated = null;
+
+    if (validationId) {
+      const record = validations.get(validationId);
+      if (!record) return res.status(400).json({ error: "validation expired or not found" });
+      if (record.expiresAt < Date.now()) {
+        validations.delete(validationId);
+        return res.status(400).json({ error: "validation expired" });
+      }
+      const payloadCheck = resolveAmounts({ amount: req.body?.amount, totalAmount, serviceFeeAmount, wagerAmount });
+      if (payloadCheck.error) return res.status(400).json({ error: payloadCheck.error });
+      const matches =
+        record.user === req.body?.user &&
+        record.masterpieceId === Number(req.body?.masterpieceId) &&
+        record.position === Number(req.body?.position) &&
+        record.pickedUid === req.body?.pickedUid &&
+        record.wagerAmount === payloadCheck.wagerAmount &&
+        record.totalAmount === payloadCheck.totalAmount &&
+        record.serviceFeeAmount === payloadCheck.serviceFeeAmount;
+      if (!matches) return res.status(400).json({ error: "validation payload mismatch" });
+      validated = { ...record, ...payloadCheck };
+      validations.delete(validationId);
+    } else {
+      validated = await validateBetPayload(req.body);
+      if (validated.error) return res.status(400).json({ error: validated.error });
+    }
+
+    const pendingBet = {
+      id: newId(),
+      user: validated.user,
+      masterpieceId: validated.masterpieceId,
+      position: validated.position,
+      pickedUid: validated.pickedUid,
+      pickedName: validated.pickedName,
+      amount: validated.wagerAmount,
+      wagerAmount: validated.wagerAmount,
+      totalAmount: validated.totalAmount,
+      serviceFeeAmount: validated.serviceFeeAmount,
+      createdAt: new Date().toISOString(),
+      futureBet: validated.futureBet,
+    };
+
+    store.pendingBets.push(pendingBet);
+    persist();
+
+    res.json({ ok: true, pendingId: pendingBet.id });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.post("/api/bets/confirm", async (req, res) => {
+  try {
+    const { pendingId, walletAddress, escrowTx, feeTx } = req.body || {};
+    if (!pendingId) return res.status(400).json({ error: "pendingId required" });
+
+    const idx = store.pendingBets.findIndex((b) => b.id === pendingId);
+    if (idx === -1) return res.status(400).json({ error: "pending bet not found" });
+
+    const pendingBet = store.pendingBets[idx];
+    const bet = {
+      ...pendingBet,
+      walletAddress: walletAddress || null,
+      escrowTx: escrowTx || null,
+      feeTx: feeTx || null,
+    };
+
+    store.pendingBets.splice(idx, 1);
+    store.bets.push(bet);
+    persist();
+
+    res.json({ ok: true, bet });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 app.get("/api/bets", (req, res) => {
   const mpId = req.query.masterpieceId ? Number(req.query.masterpieceId) : null;
   const position = req.query.position ? Number(req.query.position) : null;
@@ -317,12 +406,17 @@ app.post("/api/settle/:masterpieceId", async (req, res) => {
   }
 });
 
-// ---- Serve built frontend ONLY in production ----
-if (process.env.NODE_ENV === "production") {
-  app.use(express.static(path.join(__dirname, "..", "dist")));
+// ---- Serve built frontend when available ----
+const distDir = path.join(__dirname, "..", "dist");
+if (fs.existsSync(distDir)) {
+  app.use(express.static(distDir));
 
   app.get("*", (_req, res) => {
-    res.sendFile(path.join(__dirname, "..", "dist", "index.html"));
+    res.sendFile(path.join(distDir, "index.html"));
+  });
+} else {
+  app.get("/", (_req, res) => {
+    res.json({ ok: true, message: "CraftWorld Bets API is running." });
   });
 }
 

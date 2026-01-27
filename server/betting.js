@@ -4,10 +4,12 @@ import path from "path";
 import crypto from "crypto";
 
 export function makeStore(dataDir) {
+  fs.mkdirSync(dataDir, { recursive: true });
   const betsPath = path.join(dataDir, "bets.json");
   const resultsPath = path.join(dataDir, "results.json");
   const carryPath = path.join(dataDir, "carryover.json");
   const housePath = path.join(dataDir, "house.json");
+  const pendingPath = path.join(dataDir, "pending.json");
 
   function readJson(file, fallback) {
     try {
@@ -18,11 +20,16 @@ export function makeStore(dataDir) {
   }
 
   function writeJson(file, obj) {
-    fs.writeFileSync(file, JSON.stringify(obj, null, 2), "utf-8");
+    try {
+      fs.writeFileSync(file, JSON.stringify(obj, null, 2), "utf-8");
+    } catch (err) {
+      console.error(`Failed to persist ${file}:`, err);
+    }
   }
 
   const store = {
     bets: readJson(betsPath, []),
+    pendingBets: readJson(pendingPath, []),
     results: readJson(resultsPath, {}),
     carryover: readJson(carryPath, { "1": 0, "2": 0, "3": 0 }),
     house: readJson(housePath, { total: 0, byMasterpiece: {} }),
@@ -30,6 +37,7 @@ export function makeStore(dataDir) {
 
   function persist() {
     writeJson(betsPath, store.bets);
+    writeJson(pendingPath, store.pendingBets);
     writeJson(resultsPath, store.results);
     writeJson(carryPath, store.carryover);
     writeJson(housePath, store.house);
