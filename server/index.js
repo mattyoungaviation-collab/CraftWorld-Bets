@@ -15,6 +15,9 @@ const { store, persist } = makeStore(dataDir);
 
 // ---- Craft World GraphQL ----
 const GRAPHQL_URL = "https://craft-world.gg/graphql";
+const SERVICE_FEE_BPS = 500;
+const VALIDATION_TTL_MS = 5 * 60 * 1000;
+const validations = new Map();
 
 const MASTERPIECE_QUERY = `
   query Masterpiece($id: ID) {
@@ -79,53 +82,156 @@ app.get("/api/masterpiece/:id", async (req, res) => {
   }
 });
 
+function resolveAmounts({ amount, totalAmount, serviceFeeAmount, wagerAmount }) {
+  const amt = Number(amount);
+  const total = totalAmount !== undefined ? Number(totalAmount) : null;
+  const fee = serviceFeeAmount !== undefined ? Number(serviceFeeAmount) : null;
+  const wager = wagerAmount !== undefined ? Number(wagerAmount) : null;
+
+  if (total !== null && (!Number.isFinite(total) || !Number.isInteger(total))) {
+    return { error: "totalAmount must be an integer" };
+  }
+  if (fee !== null && (!Number.isFinite(fee) || !Number.isInteger(fee))) {
+    return { error: "serviceFeeAmount must be an integer" };
+  }
+  if (wager !== null && (!Number.isFinite(wager) || !Number.isInteger(wager))) {
+    return { error: "wagerAmount must be an integer" };
+  }
+
+  if (total !== null) {
+    const expectedFee = Math.floor((total * SERVICE_FEE_BPS) / 10000);
+    const expectedWager = total - expectedFee;
+    if (expectedWager <= 0) return { error: "amount must be a positive integer" };
+    if (fee !== null && fee !== expectedFee) return { error: "serviceFeeAmount mismatch" };
+    if (wager !== null && wager !== expectedWager) return { error: "wagerAmount mismatch" };
+    if (amt !== expectedWager) return { error: "amount must match wagerAmount" };
+    return {
+      wagerAmount: expectedWager,
+      totalAmount: total,
+      serviceFeeAmount: expectedFee,
+    };
+  }
+
+  if (!Number.isInteger(amt) || amt <= 0) return { error: "amount must be a positive integer" };
+  if (fee !== null && (!Number.isInteger(fee) || fee < 0)) return { error: "serviceFeeAmount must be an integer" };
+
+  return {
+    wagerAmount: amt,
+    totalAmount: fee !== null ? amt + fee : amt,
+    serviceFeeAmount: fee !== null ? fee : 0,
+  };
+}
+
+async function validateBetPayload(body) {
+  const { user, masterpieceId, position, pickedUid, futureBet } = body || {};
+
+  if (!user || typeof user !== "string") return { error: "user required" };
+
+  const mpId = Number(masterpieceId);
+  if (!Number.isInteger(mpId)) return { error: "masterpieceId must be integer" };
+
+  const pos = Number(position);
+  if (![1, 2, 3].includes(pos)) return { error: "position must be 1, 2, or 3" };
+
+  if (!pickedUid || typeof pickedUid !== "string") return { error: "pickedUid required" };
+
+  const amountCheck = resolveAmounts(body);
+  if (amountCheck.error) return { error: amountCheck.error };
+
+  let pickedName = pickedUid;
+  let isClosed = false;
+
+  try {
+    const mpJson = await fetchMasterpiece(mpId);
+    const mp = mpJson?.data?.masterpiece;
+    if (mp?.collectedPoints >= mp?.requiredPoints) isClosed = true;
+    const leaderboard = mp?.leaderboard || [];
+
+    if (!futureBet) {
+      const pickedRow = leaderboard.find((r) => r?.profile?.uid === pickedUid);
+      if (!pickedRow) return { error: "pickedUid not found in current leaderboard" };
+      pickedName = pickedRow?.profile?.displayName || pickedUid;
+    }
+  } catch (e) {
+    if (!futureBet) return { error: "masterpiece lookup failed" };
+  }
+
+  if (isClosed) return { error: "betting is closed for this masterpiece" };
+
+  return {
+    user,
+    masterpieceId: mpId,
+    position: pos,
+    pickedUid,
+    pickedName,
+    futureBet: Boolean(futureBet),
+    ...amountCheck,
+  };
+}
+
+app.post("/api/bets/preview", async (req, res) => {
+  try {
+    const validated = await validateBetPayload(req.body);
+    if (validated.error) return res.status(400).json({ error: validated.error });
+
+    const validationId = newId();
+    validations.set(validationId, {
+      ...validated,
+      expiresAt: Date.now() + VALIDATION_TTL_MS,
+    });
+
+    res.json({ ok: true, pickedName: validated.pickedName, validationId });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 app.post("/api/bets", async (req, res) => {
   try {
-    const { user, masterpieceId, position, pickedUid, amount, futureBet } = req.body || {};
+    const { validationId, walletAddress, escrowTx, feeTx, totalAmount, serviceFeeAmount, wagerAmount } = req.body || {};
+    let validated = null;
 
-    if (!user || typeof user !== "string") return res.status(400).json({ error: "user required" });
-
-    const mpId = Number(masterpieceId);
-    if (!Number.isInteger(mpId)) return res.status(400).json({ error: "masterpieceId must be integer" });
-
-    const pos = Number(position);
-    if (![1, 2, 3].includes(pos)) return res.status(400).json({ error: "position must be 1, 2, or 3" });
-
-    if (!pickedUid || typeof pickedUid !== "string") return res.status(400).json({ error: "pickedUid required" });
-
-    const amt = Number(amount);
-    if (!Number.isInteger(amt) || amt <= 0) return res.status(400).json({ error: "amount must be a positive integer" });
-
-    let pickedName = pickedUid;
-    let isClosed = false;
-
-    try {
-      const mpJson = await fetchMasterpiece(mpId);
-      const mp = mpJson?.data?.masterpiece;
-      if (mp?.collectedPoints >= mp?.requiredPoints) isClosed = true;
-      const leaderboard = mp?.leaderboard || [];
-
-      if (!futureBet) {
-        const pickedRow = leaderboard.find((r) => r?.profile?.uid === pickedUid);
-        if (!pickedRow) return res.status(400).json({ error: "pickedUid not found in current leaderboard" });
-        pickedName = pickedRow?.profile?.displayName || pickedUid;
+    if (validationId) {
+      const record = validations.get(validationId);
+      if (!record) return res.status(400).json({ error: "validation expired or not found" });
+      if (record.expiresAt < Date.now()) {
+        validations.delete(validationId);
+        return res.status(400).json({ error: "validation expired" });
       }
-    } catch (e) {
-      if (!futureBet) return res.status(500).json({ error: "masterpiece lookup failed" });
+      const payloadCheck = resolveAmounts({ amount: req.body?.amount, totalAmount, serviceFeeAmount, wagerAmount });
+      if (payloadCheck.error) return res.status(400).json({ error: payloadCheck.error });
+      const matches =
+        record.user === req.body?.user &&
+        record.masterpieceId === Number(req.body?.masterpieceId) &&
+        record.position === Number(req.body?.position) &&
+        record.pickedUid === req.body?.pickedUid &&
+        record.wagerAmount === payloadCheck.wagerAmount &&
+        record.totalAmount === payloadCheck.totalAmount &&
+        record.serviceFeeAmount === payloadCheck.serviceFeeAmount;
+      if (!matches) return res.status(400).json({ error: "validation payload mismatch" });
+      validated = { ...record, ...payloadCheck };
+      validations.delete(validationId);
+    } else {
+      validated = await validateBetPayload(req.body);
+      if (validated.error) return res.status(400).json({ error: validated.error });
     }
-
-    if (isClosed) return res.status(400).json({ error: "betting is closed for this masterpiece" });
 
     const bet = {
       id: newId(),
-      user,
-      masterpieceId: mpId,
-      position: pos,
-      pickedUid,
-      pickedName,
-      amount: amt,
+      user: validated.user,
+      masterpieceId: validated.masterpieceId,
+      position: validated.position,
+      pickedUid: validated.pickedUid,
+      pickedName: validated.pickedName,
+      amount: validated.wagerAmount,
+      wagerAmount: validated.wagerAmount,
+      totalAmount: validated.totalAmount,
+      serviceFeeAmount: validated.serviceFeeAmount,
+      walletAddress: walletAddress || null,
+      escrowTx: escrowTx || null,
+      feeTx: feeTx || null,
       createdAt: new Date().toISOString(),
-      futureBet: Boolean(futureBet),
+      futureBet: validated.futureBet,
     };
 
     store.bets.push(bet);

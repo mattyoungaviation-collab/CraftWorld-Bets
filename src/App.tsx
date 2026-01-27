@@ -37,6 +37,12 @@ type Bet = {
   pickedUid: string | null;
   pickedName: string | null;
   amount: number;
+  totalAmount?: number;
+  serviceFeeAmount?: number;
+  wagerAmount?: number;
+  walletAddress?: string | null;
+  escrowTx?: string | null;
+  feeTx?: string | null;
   createdAt: string;
   futureBet?: boolean;
 };
@@ -45,6 +51,10 @@ const COIN_SYMBOL = "$COIN";
 const COIN_CONTRACT = "0x7DC167E270D5EF683CEAF4AFCDF2EFBDD667A9A7";
 const ERC20_BALANCE_OF = "0x70a08231";
 const ERC20_DECIMALS = "0x313ce567";
+const ERC20_TRANSFER = "0xa9059cbb";
+const SERVICE_FEE_BPS = 500;
+const SERVICE_FEE_ADDRESS = "0xeED0491B506C78EA7fD10988B1E98A3C88e1C630";
+const BET_ESCROW_ADDRESS = import.meta.env.VITE_BET_ESCROW_ADDRESS as string | undefined;
 
 function fmt(n: number) {
   return n.toLocaleString();
@@ -68,6 +78,19 @@ function padAddress(address: string) {
   return address.toLowerCase().replace("0x", "").padStart(64, "0");
 }
 
+function padAmount(amount: bigint) {
+  return amount.toString(16).padStart(64, "0");
+}
+
+function encodeTransfer(to: string, amount: bigint) {
+  return `${ERC20_TRANSFER}${padAddress(to)}${padAmount(amount)}`;
+}
+
+function isValidAddress(address?: string | null) {
+  if (!address) return false;
+  return /^0x[a-fA-F0-9]{40}$/.test(address);
+}
+
 export default function App() {
   const [username, setUsername] = useState(() => localStorage.getItem("cw_bets_user") || "");
   const [wallet, setWallet] = useState<string | null>(null);
@@ -86,6 +109,15 @@ export default function App() {
   const [coinPrice, setCoinPrice] = useState<number | null>(null);
   const [coinDecimals, setCoinDecimals] = useState<number>(18);
   const [coinBalance, setCoinBalance] = useState<bigint | null>(null);
+  const [pendingBet, setPendingBet] = useState<{
+    type: "live" | "future";
+    pickedUid: string;
+    pickedName: string;
+  } | null>(null);
+  const [acknowledged, setAcknowledged] = useState(false);
+  const escrowAddress = BET_ESCROW_ADDRESS || "";
+  const hasEscrowAddress = Boolean(BET_ESCROW_ADDRESS);
+  const escrowAddressValid = isValidAddress(escrowAddress);
   const walletConnectProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined;
   const walletConnectEnabled = Boolean(walletConnectProjectId);
 
@@ -230,16 +262,16 @@ export default function App() {
   const potForSelected = useMemo(() => {
     return bets
       .filter((b) => b.masterpieceId === mpId && b.position === selectedPos)
-      .reduce((sum, b) => sum + b.amount, 0);
+      .reduce((sum, b) => sum + (b.wagerAmount ?? b.amount), 0);
   }, [bets, mpId, selectedPos]);
 
   const oddsByUid = useMemo(() => {
     const filtered = bets.filter((b) => b.masterpieceId === mpId && b.position === selectedPos);
-    const pot = filtered.reduce((sum, b) => sum + b.amount, 0);
+    const pot = filtered.reduce((sum, b) => sum + (b.wagerAmount ?? b.amount), 0);
     const stakeByUid = new Map<string, number>();
     for (const b of filtered) {
       if (!b.pickedUid) continue;
-      stakeByUid.set(b.pickedUid, (stakeByUid.get(b.pickedUid) || 0) + b.amount);
+      stakeByUid.set(b.pickedUid, (stakeByUid.get(b.pickedUid) || 0) + (b.wagerAmount ?? b.amount));
     }
     const odds = new Map<string, number>();
     for (const [uid, stake] of stakeByUid) {
@@ -309,6 +341,65 @@ export default function App() {
   }
 
   async function placeBet(picked: LeaderRow) {
+    setPendingBet({
+      type: "live",
+      pickedUid: picked.profile.uid,
+      pickedName: picked.profile.displayName || picked.profile.uid,
+    });
+  }
+
+  async function openFutureBetConfirm() {
+    if (!futurePick.trim()) {
+      setToast("Add a predicted player UID or name for future bets.");
+      return;
+    }
+    setPendingBet({
+      type: "future",
+      pickedUid: futurePick.trim(),
+      pickedName: futurePick.trim(),
+    });
+  }
+
+  async function signAndSendTransfer(to: string, rawAmount: bigint) {
+    if (!walletProvider || !wallet) throw new Error("Connect your wallet to sign the transaction.");
+    const data = encodeTransfer(to, rawAmount);
+    const txHash = await walletProvider.request({
+      method: "eth_sendTransaction",
+      params: [
+        {
+          from: wallet,
+          to: COIN_CONTRACT,
+          data,
+        },
+      ],
+    });
+    return txHash as string;
+  }
+
+  async function previewBet(payload: {
+    user: string;
+    masterpieceId: number;
+    position: number;
+    pickedUid: string;
+    amount: number;
+    totalAmount: number;
+    serviceFeeAmount: number;
+    wagerAmount: number;
+    futureBet: boolean;
+  }) {
+    const r = await fetch("/api/bets/preview", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json();
+    if (!r.ok || j?.ok !== true) {
+      throw new Error(j?.error || "Unable to validate bet");
+    }
+    return j as { ok: true; pickedName: string; validationId: string };
+  }
+
+  async function finalizeBet() {
     if (!username.trim()) {
       setToast("Type a username first.");
       return;
@@ -317,16 +408,70 @@ export default function App() {
       setToast("Betting is closed for this masterpiece.");
       return;
     }
+    if (!pendingBet) {
+      setToast("Pick a player before confirming.");
+      return;
+    }
+    if (!wallet) {
+      setToast("Connect your wallet to place a bet.");
+      return;
+    }
+    if (!acknowledged) {
+      setToast("Please acknowledge the betting terms to continue.");
+      return;
+    }
+    if (!hasEscrowAddress) {
+      setToast("Missing escrow address. Set VITE_BET_ESCROW_ADDRESS to accept bets.");
+      return;
+    }
+    if (!escrowAddressValid) {
+      setToast("Escrow address is invalid. Use a 0x wallet address for VITE_BET_ESCROW_ADDRESS.");
+      return;
+    }
     setPlacing(true);
     setToast("");
     try {
+      const totalAmount = Math.floor(Number(amount));
+      if (totalAmount <= 0) {
+        throw new Error("Bet amount must be greater than zero.");
+      }
+      const rawTotal = BigInt(totalAmount) * BigInt(10) ** BigInt(coinDecimals);
+      const rawFee = (rawTotal * BigInt(SERVICE_FEE_BPS)) / BigInt(10000);
+      const rawWager = rawTotal - rawFee;
+      const feeAmount = Math.floor((totalAmount * SERVICE_FEE_BPS) / 10000);
+      const wagerAmount = totalAmount - feeAmount;
+
+      const preview = await previewBet({
+        user: username.trim(),
+        masterpieceId: mpId,
+        position: selectedPos,
+        pickedUid: pendingBet.pickedUid,
+        amount: wagerAmount,
+        totalAmount,
+        serviceFeeAmount: feeAmount,
+        wagerAmount,
+        futureBet: pendingBet.type === "future",
+      });
+
+      const feeTx = await signAndSendTransfer(SERVICE_FEE_ADDRESS, rawFee);
+      const escrowTx = await signAndSendTransfer(escrowAddress, rawWager);
+
       const payload = {
         user: username.trim(),
         masterpieceId: mpId,
         position: selectedPos,
-        pickedUid: picked.profile.uid,
-        amount: Math.floor(Number(amount)),
-        futureBet: false,
+        pickedUid: pendingBet.pickedUid,
+        amount: wagerAmount,
+        totalAmount,
+        serviceFeeAmount: feeAmount,
+        wagerAmount,
+        futureBet: pendingBet.type === "future",
+        walletAddress: wallet,
+        escrowTx,
+        feeTx,
+        serviceFeeBps: SERVICE_FEE_BPS,
+        validationId: preview.validationId,
+        pickedName: preview.pickedName,
       };
 
       const r = await fetch("/api/bets", {
@@ -341,54 +486,16 @@ export default function App() {
       }
 
       setToast(
-        `✅ Bet placed: ${payload.user} → #${payload.position} = ${picked.profile.displayName || picked.profile.uid} (${fmt(
-          payload.amount
+        `✅ Bet placed: ${payload.user} → #${payload.position} = ${preview.pickedName} (${fmt(
+          payload.totalAmount
         )} ${COIN_SYMBOL})`
       );
-      loadBets(mpId);
-    } catch (e: any) {
-      setToast(`❌ ${e?.message || String(e)}`);
-    } finally {
-      setPlacing(false);
-    }
-  }
-
-  async function placeFutureBet() {
-    if (!username.trim()) {
-      setToast("Type a username first.");
-      return;
-    }
-    if (!futurePick.trim()) {
-      setToast("Add a predicted player UID or name for future bets.");
-      return;
-    }
-    setPlacing(true);
-    setToast("");
-    try {
-      const payload = {
-        user: username.trim(),
-        masterpieceId: mpId,
-        position: selectedPos,
-        pickedUid: futurePick.trim(),
-        amount: Math.floor(Number(amount)),
-        futureBet: true,
-      };
-
-      const r = await fetch("/api/bets", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      const j = await r.json();
-      if (!r.ok || j?.ok !== true) {
-        throw new Error(j?.error || "Failed to place bet");
+      setPendingBet(null);
+      setAcknowledged(false);
+      if (pendingBet.type === "future") {
+        setFuturePick("");
+        setFutureMode(false);
       }
-
-      setToast(
-        `✅ Future bet placed: ${payload.user} → #${payload.position} = ${payload.pickedUid} (${fmt(payload.amount)} ${COIN_SYMBOL})`
-      );
-      setFuturePick("");
       loadBets(mpId);
     } catch (e: any) {
       setToast(`❌ ${e?.message || String(e)}`);
@@ -396,6 +503,10 @@ export default function App() {
       setPlacing(false);
     }
   }
+
+  const feeAmount = useMemo(() => Math.floor((amount * SERVICE_FEE_BPS) / 10000), [amount]);
+  const wagerAmount = useMemo(() => Math.max(amount - feeAmount, 0), [amount, feeAmount]);
+  const totalInUsd = useMemo(() => (coinPrice || 0) * amount, [coinPrice, amount]);
 
   return (
     <div className="page">
@@ -468,6 +579,19 @@ export default function App() {
           <div>
             <label>Amount ({COIN_SYMBOL})</label>
             <input type="number" value={amount} onChange={(e) => setAmount(Number(e.target.value))} />
+            <div className="subtle" style={{ marginTop: 6 }}>
+              {fmt(wagerAmount)} {COIN_SYMBOL} wager + {fmt(feeAmount)} {COIN_SYMBOL} fee (5%)
+            </div>
+            {!hasEscrowAddress && (
+              <div className="subtle" style={{ marginTop: 6 }}>
+                Set <strong>VITE_BET_ESCROW_ADDRESS</strong> (a 0x wallet address) to route wagers to escrow.
+              </div>
+            )}
+            {hasEscrowAddress && !escrowAddressValid && (
+              <div className="subtle" style={{ marginTop: 6 }}>
+                Escrow address must be a valid 0x wallet address.
+              </div>
+            )}
           </div>
         </div>
 
@@ -528,6 +652,31 @@ export default function App() {
         </div>
       </section>
 
+      <section className="card">
+        <div className="section-title">Betting Terms</div>
+        <ul className="terms-list">
+          <li>
+            All bets are final once confirmed on-chain. No refunds, chargebacks, or reversals are possible after you
+            sign the transaction.
+          </li>
+          <li>
+            A 5% service fee is deducted from each bet for server support and operations. The fee is sent to{" "}
+            <strong>{SERVICE_FEE_ADDRESS}</strong> on Ronin.
+          </li>
+          <li>
+            Winners are paid back in {COIN_SYMBOL} to the same wallet address that placed the bet, after the
+            masterpiece completes and results are verified.
+          </li>
+          <li>
+            Wagers are escrowed to <strong>{escrowAddress || "an escrow wallet"}</strong> on Ronin to fund payouts.
+          </li>
+          <li>
+            Betting is for entertainment only and does not constitute investment advice. CraftWorld Bets is not
+            responsible for losses from price volatility, failed transactions, or incorrect wallet addresses.
+          </li>
+        </ul>
+      </section>
+
       {futureMode && (
         <section className="card">
           <div className="section-title">Future Masterpiece Bet</div>
@@ -543,8 +692,8 @@ export default function App() {
               <button className="btn" onClick={() => setFutureMode(false)}>
                 Back to Live Betting
               </button>
-              <button className="btn btn-primary" onClick={placeFutureBet} disabled={placing}>
-                {placing ? "Placing..." : "Place Future Bet"}
+              <button className="btn btn-primary" onClick={openFutureBetConfirm} disabled={placing}>
+                {placing ? "Placing..." : "Confirm Future Bet"}
               </button>
             </div>
           </div>
@@ -607,30 +756,132 @@ export default function App() {
 
       <section className="card">
         <div className="section-title">Betting Board</div>
-        <div className="subtle">All bets are shown in {COIN_SYMBOL} and USD.</div>
+        <div className="subtle">All bets are shown in {COIN_SYMBOL} and USD (service fee included).</div>
         <div className="table" style={{ marginTop: 12 }}>
           <div className="table-header">
             <div>Time</div>
             <div>User</div>
             <div>Pick</div>
             <div>Pos</div>
-            <div>Amount</div>
+            <div>Wager</div>
           </div>
           {bets.length === 0 && <div className="empty">No bets yet.</div>}
-          {bets.map((bet) => (
-            <div className="table-row static" key={bet.id}>
-              <div className="subtle">{new Date(bet.createdAt).toLocaleString()}</div>
-              <div>{bet.user}</div>
-              <div>{bet.pickedName || bet.pickedUid || "—"}</div>
-              <div>#{bet.position}</div>
-              <div className="numeric">
-                {fmt(bet.amount)} {COIN_SYMBOL}
-                <div className="subtle">{formatUsd((coinPrice || 0) * bet.amount)}</div>
+          {bets.map((bet) => {
+            const wager = bet.wagerAmount ?? bet.amount;
+            const total = bet.totalAmount ?? bet.amount;
+            const fee = bet.serviceFeeAmount ?? Math.max(total - wager, 0);
+            return (
+              <div className="table-row static" key={bet.id}>
+                <div className="subtle">{new Date(bet.createdAt).toLocaleString()}</div>
+                <div>{bet.user}</div>
+                <div>{bet.pickedName || bet.pickedUid || "—"}</div>
+                <div>#{bet.position}</div>
+                <div className="numeric">
+                  {fmt(wager)} {COIN_SYMBOL}
+                  <div className="subtle">
+                    Total {fmt(total)} {COIN_SYMBOL} • Fee {fmt(fee)} {COIN_SYMBOL}
+                  </div>
+                  <div className="subtle">{formatUsd((coinPrice || 0) * total)}</div>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
+
+      {pendingBet && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <div className="modal-header">
+              <div>
+                <div className="eyebrow">Confirm Bet</div>
+                <h2>{pendingBet.type === "future" ? "Future Bet" : "Live Bet"}</h2>
+              </div>
+              <button
+                className="btn"
+                onClick={() => {
+                  setPendingBet(null);
+                  setAcknowledged(false);
+                }}
+              >
+                Close
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="confirm-grid">
+                <div>
+                  <div className="label">Pick</div>
+                  <div className="title">{pendingBet.pickedName}</div>
+                  <div className="subtle">Position #{selectedPos}</div>
+                </div>
+                <div>
+                  <div className="label">Total Amount</div>
+                  <div className="title">
+                    {fmt(amount)} {COIN_SYMBOL}
+                  </div>
+                  <div className="subtle">{formatUsd(totalInUsd)}</div>
+                </div>
+                <div>
+                  <div className="label">Wager Amount</div>
+                  <div className="title">
+                    {fmt(wagerAmount)} {COIN_SYMBOL}
+                  </div>
+                <div className="subtle">
+                  Escrowed for payouts to {escrowAddress || "an escrow wallet"}
+                </div>
+                </div>
+                <div>
+                  <div className="label">Service Fee (5%)</div>
+                  <div className="title">
+                    {fmt(feeAmount)} {COIN_SYMBOL}
+                  </div>
+                  <div className="subtle">Sent to {SERVICE_FEE_ADDRESS}</div>
+                </div>
+              </div>
+
+              <div className="terms-box">
+                <p>
+                  By confirming, you authorize a token transfer from your wallet for the wager and service fee. Bets are
+                  final, non-refundable, and may not be canceled once the transaction is signed.
+                </p>
+                <p>
+                  Winners are paid back to the same wallet address that submitted the bet after the masterpiece closes
+                  and results are verified.
+                </p>
+                <p>
+                  CraftWorld Bets is not responsible for wallet errors, network congestion, failed transactions, or
+                  losses due to price volatility.
+                </p>
+              </div>
+
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={acknowledged}
+                  onChange={(e) => setAcknowledged(e.target.checked)}
+                />
+                I acknowledge that all bets are final and I authorize the wager + 5% service fee.
+              </label>
+              {!wallet && <div className="toast">Connect your wallet to sign the transaction.</div>}
+            </div>
+            <div className="modal-actions">
+              <button
+                className="btn"
+                onClick={() => {
+                  setPendingBet(null);
+                  setAcknowledged(false);
+                }}
+                disabled={placing}
+              >
+                Cancel
+              </button>
+              <button className="btn btn-primary" onClick={finalizeBet} disabled={placing || !acknowledged || !wallet}>
+                {placing ? "Placing..." : "Confirm & Sign"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
