@@ -137,6 +137,10 @@ export default function App() {
   const [placing, setPlacing] = useState(false);
   const [toast, setToast] = useState<string>("");
   const [bets, setBets] = useState<Bet[]>([]);
+  const [allBets, setAllBets] = useState<Bet[]>([]);
+  const [walletBets, setWalletBets] = useState<Bet[]>([]);
+  const [showPositions, setShowPositions] = useState(false);
+  const [positionsLoading, setPositionsLoading] = useState(false);
   const [futureMode, setFutureMode] = useState(false);
   const [futurePick, setFuturePick] = useState("");
   const [coinPrice, setCoinPrice] = useState<number | null>(null);
@@ -165,6 +169,30 @@ export default function App() {
   useEffect(() => {
     if (!wallet) setCoinBalance(null);
   }, [wallet]);
+
+  useEffect(() => {
+    if (!wallet) {
+      setWalletBets([]);
+      setAllBets([]);
+      return;
+    }
+    const address = wallet;
+    const register = async () => {
+      try {
+        await fetch("/api/wallets/register", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ address }),
+        });
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    register();
+    if (showPositions) {
+      refreshWalletPositions(address);
+    }
+  }, [wallet, showPositions]);
 
   function isMasterpieceClosed(masterpiece: Masterpiece) {
     const dynamite = masterpiece.resources?.find((resource) => resource.symbol === "DYNAMITE");
@@ -224,6 +252,35 @@ export default function App() {
       setBets(j?.bets || []);
     } catch (e) {
       console.error(e);
+    }
+  }
+
+  async function loadAllBets() {
+    try {
+      const r = await fetch("/api/bets");
+      const j = await r.json();
+      setAllBets(j?.bets || []);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  async function loadWalletBets(address: string) {
+    try {
+      const r = await fetch(`/api/wallets/${encodeURIComponent(address)}/bets`);
+      const j = await r.json();
+      setWalletBets(j?.bets || []);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  async function refreshWalletPositions(address: string) {
+    setPositionsLoading(true);
+    try {
+      await Promise.all([loadWalletBets(address), loadAllBets()]);
+    } finally {
+      setPositionsLoading(false);
     }
   }
 
@@ -335,6 +392,23 @@ export default function App() {
       .filter((b) => b.masterpieceId === mpId && b.position === selectedPos)
       .reduce((sum, b) => sum + (b.wagerAmount ?? b.amount), 0);
   }, [bets, mpId, selectedPos]);
+
+  const positionSnapshot = useMemo(() => {
+    const source = allBets.length > 0 ? allBets : bets;
+    const potByPosition = new Map<string, number>();
+    const stakeByPick = new Map<string, number>();
+    for (const bet of source) {
+      const wager = bet.wagerAmount ?? bet.amount;
+      const posKey = `${bet.masterpieceId}-${bet.position}`;
+      potByPosition.set(posKey, (potByPosition.get(posKey) || 0) + wager);
+      const pickKey = bet.pickedUid || bet.pickedName;
+      if (pickKey) {
+        const pickRef = `${posKey}-${pickKey}`;
+        stakeByPick.set(pickRef, (stakeByPick.get(pickRef) || 0) + wager);
+      }
+    }
+    return { potByPosition, stakeByPick };
+  }, [allBets, bets]);
 
   const oddsByUid = useMemo(() => {
     const filtered = bets.filter((b) => b.masterpieceId === mpId && b.position === selectedPos);
@@ -939,6 +1013,90 @@ export default function App() {
             );
           })}
         </div>
+      </section>
+
+      <section className="card">
+        <div className="section-title">My Positions</div>
+        <div className="subtle">Connect your wallet to view your saved bets across devices.</div>
+        <div className="actions">
+          <button
+            className="btn btn-primary"
+            onClick={() => {
+              if (!wallet) {
+                setToast("Connect your wallet to view saved positions.");
+                return;
+              }
+              const next = !showPositions;
+              setShowPositions(next);
+              if (next) {
+                refreshWalletPositions(wallet);
+              }
+            }}
+          >
+            {showPositions ? "Hide My Bets" : "View My Bets"}
+          </button>
+          <button
+            className="btn"
+            onClick={() => wallet && refreshWalletPositions(wallet)}
+            disabled={!wallet || positionsLoading}
+          >
+            {positionsLoading ? "Refreshing..." : "Refresh Positions"}
+          </button>
+        </div>
+        {showPositions && (
+          <div className="table positions-table" style={{ marginTop: 12 }}>
+            <div className="table-header">
+              <div>Time</div>
+              <div>Masterpiece</div>
+              <div>Pick</div>
+              <div>Pos</div>
+              <div>Bet Cost</div>
+              <div>Size</div>
+              <div>Fees</div>
+              <div>Live Value</div>
+            </div>
+            {walletBets.length === 0 && <div className="empty">No bets found for this wallet.</div>}
+            {walletBets.map((bet) => {
+              const wager = bet.wagerAmount ?? bet.amount;
+              const total = bet.totalAmount ?? bet.amount;
+              const fee = bet.serviceFeeAmount ?? Math.max(total - wager, 0);
+              const posKey = `${bet.masterpieceId}-${bet.position}`;
+              const pickKey = bet.pickedUid || bet.pickedName;
+              const pot = positionSnapshot.potByPosition.get(posKey) || 0;
+              const stake =
+                pickKey && positionSnapshot.stakeByPick.get(`${posKey}-${pickKey}`)
+                  ? positionSnapshot.stakeByPick.get(`${posKey}-${pickKey}`) || 0
+                  : 0;
+              const liveValue =
+                pot > 0 && stake > 0 ? Math.min((wager / stake) * pot, pot) : null;
+              return (
+                <div className="table-row static" key={bet.id}>
+                  <div className="subtle">{new Date(bet.createdAt).toLocaleString()}</div>
+                  <div>#{bet.masterpieceId}</div>
+                  <div>{bet.pickedName || bet.pickedUid || "—"}</div>
+                  <div>#{bet.position}</div>
+                  <div className="numeric">
+                    {fmt(total)} {COIN_SYMBOL}
+                    <div className="subtle">{formatUsd((coinPrice || 0) * total)}</div>
+                  </div>
+                  <div className="numeric">
+                    {fmt(wager)} {COIN_SYMBOL}
+                  </div>
+                  <div className="numeric">
+                    {fmt(fee)} {COIN_SYMBOL}
+                  </div>
+                  <div className="numeric">
+                    {liveValue !== null ? `${fmt(liveValue)} ${COIN_SYMBOL}` : "—"}
+                    <div className="subtle">
+                      {liveValue !== null ? formatUsd((coinPrice || 0) * liveValue) : "—"}
+                    </div>
+                    <div className="subtle">Pot cap: {fmt(pot)} {COIN_SYMBOL}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </section>
 
       {pendingBet && (
