@@ -25,6 +25,12 @@ const MASTERPIECE_QUERY = `
       collectedPoints
       requiredPoints
       startedAt
+      resources {
+        symbol
+        amount
+        target
+        consumedPowerPerUnit
+      }
       leaderboard {
         position
         masterpiecePoints

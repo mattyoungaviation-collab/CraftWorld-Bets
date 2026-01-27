@@ -19,6 +19,12 @@ type Masterpiece = {
   collectedPoints: number;
   requiredPoints: number;
   startedAt: string;
+  resources?: Array<{
+    symbol: string;
+    amount: number;
+    target: number;
+    consumedPowerPerUnit?: number;
+  }>;
   leaderboard: LeaderRow[];
 };
 
@@ -121,10 +127,20 @@ export default function App() {
 
   const top100 = useMemo(() => (mp?.leaderboard || []).slice(0, 100), [mp]);
   const hasLiveBoard = top100.length > 0;
-  const bettingClosed = !!mp && mp.collectedPoints >= mp.requiredPoints;
+  const dynamiteResource = useMemo(
+    () => mp?.resources?.find((resource) => resource.symbol === "DYNAMITE") || null,
+    [mp]
+  );
+  const bettingClosed =
+    !!mp &&
+    (dynamiteResource
+      ? dynamiteResource.amount >= dynamiteResource.target
+      : mp.collectedPoints >= mp.requiredPoints);
 
   const potForSelected = useMemo(() => {
-    return bets.filter((b) => b.masterpieceId === mpId && b.position === selectedPos).reduce((sum, b) => sum + b.amount, 0);
+    return bets
+      .filter((b) => b.masterpieceId === mpId && b.position === selectedPos)
+      .reduce((sum, b) => sum + b.amount, 0);
   }, [bets, mpId, selectedPos]);
 
   const oddsByUid = useMemo(() => {
@@ -345,9 +361,15 @@ export default function App() {
         <div className="right">
           <div className="label">Dynamite Progress</div>
           <div className="title">
-            {mp ? `${fmt(mp.collectedPoints)} / ${fmt(mp.requiredPoints)}` : "—"}
+            {dynamiteResource
+              ? `${fmt(dynamiteResource.amount)} / ${fmt(dynamiteResource.target)}`
+              : mp
+              ? `${fmt(mp.collectedPoints)} / ${fmt(mp.requiredPoints)}`
+              : "—"}
           </div>
-          <div className="subtle">Betting closes when dynamite is full.</div>
+          <div className="subtle">
+            {dynamiteResource ? "Dynamite donated / target amount." : "Betting closes when dynamite is full."}
+          </div>
         </div>
       </section>
 
