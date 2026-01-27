@@ -42,6 +42,8 @@ type Bet = {
 
 const COIN_SYMBOL = "$COIN";
 const COIN_CONTRACT = "0x7DC167E270D5EF683CEAF4AFCDF2EFBDD667A9A7";
+const ERC20_BALANCE_OF = "0x70a08231";
+const ERC20_DECIMALS = "0x313ce567";
 
 function fmt(n: number) {
   return n.toLocaleString();
@@ -50,6 +52,19 @@ function fmt(n: number) {
 function formatUsd(n: number | null) {
   if (!n) return "—";
   return n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 4 });
+}
+
+function formatTokenAmount(raw: bigint, decimals: number) {
+  if (decimals <= 0) return raw.toString();
+  const base = BigInt(10) ** BigInt(decimals);
+  const whole = raw / base;
+  const fraction = raw % base;
+  const fractionStr = fraction.toString().padStart(decimals, "0").slice(0, 4);
+  return `${whole.toLocaleString()}.${fractionStr}`;
+}
+
+function padAddress(address: string) {
+  return address.toLowerCase().replace("0x", "").padStart(64, "0");
 }
 
 export default function App() {
@@ -67,6 +82,8 @@ export default function App() {
   const [futureMode, setFutureMode] = useState(false);
   const [futurePick, setFuturePick] = useState("");
   const [coinPrice, setCoinPrice] = useState<number | null>(null);
+  const [coinDecimals, setCoinDecimals] = useState<number>(18);
+  const [coinBalance, setCoinBalance] = useState<bigint | null>(null);
 
   useEffect(() => {
     localStorage.setItem("cw_bets_user", username);
@@ -124,6 +141,50 @@ export default function App() {
   useEffect(() => {
     loadBets(mpId);
   }, [mpId]);
+
+  useEffect(() => {
+    if (!wallet) return;
+    let isActive = true;
+
+    async function loadCoinMeta() {
+      try {
+        const ethereum = (window as any)?.ethereum;
+        if (!ethereum) return;
+        const decimalsHex = await ethereum.request({
+          method: "eth_call",
+          params: [{ to: COIN_CONTRACT, data: ERC20_DECIMALS }, "latest"],
+        });
+        const parsed = Number.parseInt(decimalsHex, 16);
+        if (Number.isFinite(parsed) && isActive) setCoinDecimals(parsed);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function loadCoinBalance() {
+      try {
+        const ethereum = (window as any)?.ethereum;
+        if (!ethereum) return;
+        const data = `${ERC20_BALANCE_OF}${padAddress(wallet)}`;
+        const balanceHex = await ethereum.request({
+          method: "eth_call",
+          params: [{ to: COIN_CONTRACT, data }, "latest"],
+        });
+        const value = BigInt(balanceHex);
+        if (isActive) setCoinBalance(value);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    loadCoinMeta();
+    loadCoinBalance();
+    const interval = setInterval(loadCoinBalance, 30000);
+    return () => {
+      isActive = false;
+      clearInterval(interval);
+    };
+  }, [wallet]);
 
   const top100 = useMemo(() => (mp?.leaderboard || []).slice(0, 100), [mp]);
   const hasLiveBoard = top100.length > 0;
@@ -278,6 +339,10 @@ export default function App() {
           <div className="price-pill">
             <div>{COIN_SYMBOL} live price</div>
             <strong>{formatUsd(coinPrice)}</strong>
+          </div>
+          <div className="price-pill">
+            <div>{COIN_SYMBOL} balance</div>
+            <strong>{coinBalance !== null ? formatTokenAmount(coinBalance, coinDecimals) : "—"}</strong>
           </div>
           <button className="btn btn-primary" onClick={connectWallet}>
             {wallet ? `Connected: ${wallet.slice(0, 6)}...${wallet.slice(-4)}` : "Connect Wallet"}
