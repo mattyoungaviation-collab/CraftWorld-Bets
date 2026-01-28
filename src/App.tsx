@@ -376,6 +376,15 @@ export default function App() {
   }, [walletProvider]);
 
   const top100 = useMemo(() => (mp?.leaderboard || []).slice(0, 100), [mp]);
+  const currentPositions = useMemo(() => {
+    const byUid = new Map<string, number>();
+    const byName = new Map<string, number>();
+    for (const row of mp?.leaderboard || []) {
+      if (row.profile.uid) byUid.set(row.profile.uid, row.position);
+      if (row.profile.displayName) byName.set(row.profile.displayName.toLowerCase(), row.position);
+    }
+    return { byUid, byName };
+  }, [mp]);
   const hasLiveBoard = top100.length > 0;
   const dynamiteResource = useMemo(
     () => mp?.resources?.find((resource) => resource.symbol === "DYNAMITE") || null,
@@ -1067,8 +1076,13 @@ export default function App() {
                 pickKey && positionSnapshot.stakeByPick.get(`${posKey}-${pickKey}`)
                   ? positionSnapshot.stakeByPick.get(`${posKey}-${pickKey}`) || 0
                   : 0;
-              const liveValue =
-                pot > 0 && stake > 0 ? Math.min((wager / stake) * pot, pot) : null;
+              const currentPos = bet.pickedUid
+                ? currentPositions.byUid.get(bet.pickedUid)
+                : bet.pickedName
+                  ? currentPositions.byName.get(bet.pickedName.toLowerCase())
+                  : undefined;
+              const isWinning = currentPos === bet.position;
+              const liveValue = stake > 0 && pot > 0 ? (isWinning ? Math.min((wager / stake) * pot, pot) : 0) : 0;
               return (
                 <div className="table-row static" key={bet.id}>
                   <div className="subtle">{new Date(bet.createdAt).toLocaleString()}</div>
@@ -1086,9 +1100,9 @@ export default function App() {
                     {fmt(fee)} {COIN_SYMBOL}
                   </div>
                   <div className="numeric">
-                    {liveValue !== null ? `${fmt(liveValue)} ${COIN_SYMBOL}` : "—"}
+                    {`${fmt(liveValue)} ${COIN_SYMBOL}`}
                     <div className="subtle">
-                      {liveValue !== null ? formatUsd((coinPrice || 0) * liveValue) : "—"}
+                      {formatUsd((coinPrice || 0) * liveValue)}
                     </div>
                     <div className="subtle">Pot cap: {fmt(pot)} {COIN_SYMBOL}</div>
                   </div>
