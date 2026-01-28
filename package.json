@@ -8,16 +8,19 @@
     "dev:server": "node server/index.js",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "start": "node server/index.js"
+    "start": "node server/index.js",
+    "deploy:router": "node scripts/deploy-router.mjs"
   },
   "dependencies": {
+    "ethers": "^6.15.0",
     "@walletconnect/ethereum-provider": "^2.11.2",
     "@walletconnect/modal": "^2.7.0",
     "@reown/appkit": "^1.0.0",
     "express": "^4.19.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "serve-static": "^2.2.1"
+    "serve-static": "^2.2.1",
+    "solc": "^0.8.30"
   },
   "devDependencies": {
     "@types/react": "^18.3.3",

@@ -75,3 +75,36 @@ export default defineConfig([
 ## Server persistence
 
 The API stores bets on disk. Set `BETS_DATA_DIR` to a persistent volume path (for example, `/var/data` on Render) so redeploys keep existing bets. If unset, the server falls back to `server/data`.
+
+## Smart contract payment routing
+
+The `contracts/BetPaymentRouter.sol` contract routes wager payments by splitting a total amount into a service fee and an escrow transfer. Configure the fee recipient, escrow recipient, and fee bps at deployment time, then call `routeTokenPayment` with the ERC-20 token address, total amount, and a bet id to emit an on-chain receipt.
+
+### Deploying the router to Ronin
+
+Provide the deployment secrets via your deployment system (do not commit them), then run:
+
+```bash
+RONIN_RPC=... \
+DEPLOYER_PRIVATE_KEY=... \
+FEE_RECIPIENT=0x... \
+ESCROW_RECIPIENT=0x... \
+FEE_BPS=500 \
+npm run deploy:router
+```
+
+The deployment script compiles `contracts/BetPaymentRouter.sol`, deploys it to Ronin, and writes a `router-deployment.json`
+file containing the deployed address and configuration.
+
+### Verifying the router on Ronin
+
+To make the contract readable on the Ronin explorer, verify it after deployment:
+
+1. Open `router-deployment.json` and copy the deployed `address`.
+2. Use the Ronin explorer's **Verify & Publish** flow with:
+   - **Compiler version:** from `router-deployment.json` (`compilerVersion`).
+   - **Optimizer:** enabled, runs `200`.
+   - **Constructor args:** `feeRecipient`, `escrowRecipient`, `feeBps` (in that order).
+3. Paste the source from `contracts/BetPaymentRouter.sol`.
+
+Once verified, the explorer will show the full source and ABI for anyone to read.
