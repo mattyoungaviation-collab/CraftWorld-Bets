@@ -465,20 +465,31 @@ export default function App() {
     return winners;
   }, [allBets, bets, hasLiveBoard, liveLeaderByPosition, mpId, positionSnapshot]);
 
-  const oddsByUid = useMemo(() => {
-    const leader = mp?.leaderboard?.find((row) => row.position === selectedPos);
-    const leaderPoints = leader?.masterpiecePoints ?? 0;
-    const odds = new Map<string, number>();
-    if (!leaderPoints || leaderPoints <= 0 || !mp?.leaderboard) {
-      return { odds };
+  const chanceByUid = useMemo(() => {
+    const chances = new Map<string, number>();
+    if (!mp?.leaderboard || mp.leaderboard.length === 0) {
+      return { chances };
+    }
+    const totalPoints = mp.leaderboard.reduce((sum, row) => sum + Math.max(row.masterpiecePoints, 0), 0);
+    if (bettingClosed) {
+      const winner = mp.leaderboard.find((row) => row.position === selectedPos);
+      if (winner) {
+        for (const row of mp.leaderboard) {
+          chances.set(row.profile.uid, row.profile.uid === winner.profile.uid ? 100 : 0);
+        }
+        return { chances };
+      }
+    }
+    if (!totalPoints) {
+      return { chances };
     }
     for (const row of mp.leaderboard) {
       if (row.masterpiecePoints <= 0) continue;
-      const value = row.position === selectedPos ? 1 : leaderPoints / row.masterpiecePoints;
-      odds.set(row.profile.uid, value);
+      const value = (row.masterpiecePoints / totalPoints) * 100;
+      chances.set(row.profile.uid, value);
     }
-    return { odds };
-  }, [mp, selectedPos]);
+    return { chances };
+  }, [bettingClosed, mp, selectedPos]);
 
   async function connectWallet() {
     setToast("");
@@ -988,14 +999,14 @@ export default function App() {
             <div className="cell-center">Pos</div>
             <div>Player</div>
             <div className="numeric">Points</div>
-            <div className="numeric">Odds</div>
+            <div className="numeric">Chance of winning</div>
             <div></div>
           </div>
 
           {top100.map((row) => {
             const name = row.profile.displayName || row.profile.uid;
             const avatar = row.profile.avatarUrl || "";
-            const odds = oddsByUid.odds.get(row.profile.uid);
+            const chance = chanceByUid.chances.get(row.profile.uid);
             return (
               <button
                 key={`${row.position}-${row.profile.uid}`}
@@ -1024,7 +1035,7 @@ export default function App() {
 
                 <div className="numeric">{fmt(row.masterpiecePoints)}</div>
 
-                <div className="numeric">{odds ? `${odds.toFixed(2)}x` : "—"}</div>
+                <div className="numeric">{chance !== undefined ? `${chance.toFixed(2)}%` : "—"}</div>
 
                 <div className="action-text">{bettingClosed ? "Closed" : placing ? "Placing..." : `Bet #${selectedPos}`}</div>
               </button>
