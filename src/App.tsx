@@ -1455,16 +1455,17 @@ export default function App() {
       appendBlackjackLog("Shoe re-shuffled for the next hand.");
     }
     const nextShoe = [...shoe];
-    const draw = () => nextShoe.shift();
+    // We ensure the shoe has enough cards before dealing, so this is safe.
+    const draw = () => nextShoe.shift()!;
     const nextDealer: Card[] = [];
-    const dealtSeats = blackjackSeats.map((seat) => {
+    const dealtSeats: BlackjackSeat[] = blackjackSeats.map((seat): BlackjackSeat => {
       if (!seat.joined) return seat;
       const bet = Math.max(BLACKJACK_MIN_BET, Math.min(seat.bet, seat.bankroll));
       if (bet <= 0 || seat.bankroll < bet) {
         return { ...seat, status: "waiting", hand: [], lastOutcome: undefined };
       }
-      const hand = [draw(), draw()].filter(Boolean) as Card[];
-      const status = isBlackjack(hand) ? "blackjack" : "playing";
+      const hand: Card[] = [draw(), draw()];
+      const status: SeatStatus = isBlackjack(hand) ? "blackjack" : "playing";
       return {
         ...seat,
         bet,
@@ -1477,12 +1478,12 @@ export default function App() {
     nextDealer.push(draw(), draw());
     const firstPlayingIndex = dealtSeats.findIndex((seat) => seat.joined && seat.status === "playing");
     setBlackjackSeats(dealtSeats);
-    setBlackjackDealer(nextDealer.filter(Boolean) as Card[]);
+    setBlackjackDealer(nextDealer);
     setBlackjackShoe(nextShoe);
     if (firstPlayingIndex === -1) {
       setBlackjackPhase("dealer");
       setBlackjackActiveSeat(null);
-      resolveDealerAndPayout(dealtSeats, nextDealer.filter(Boolean) as Card[]);
+      resolveDealerAndPayout(dealtSeats, nextDealer);
     } else {
       setBlackjackPhase("player");
       setBlackjackActiveSeat(firstPlayingIndex);
@@ -1583,7 +1584,7 @@ export default function App() {
       }
       const dealerTotalsFinal = getHandTotals(nextDealer);
       const dealerHasBlackjack = isBlackjack(nextDealer);
-      const settledSeats = currentSeats.map((seat) => {
+      const settledSeats: BlackjackSeat[] = currentSeats.map((seat): BlackjackSeat => {
         if (!seat.joined || seat.status === "waiting" || seat.status === "empty") return seat;
         const playerTotals = getHandTotals(seat.hand);
         let payout = 0;
@@ -1616,7 +1617,7 @@ export default function App() {
       });
       setBlackjackDealer(nextDealer);
       setBlackjackSeats(
-        settledSeats.map((seat) =>
+        settledSeats.map((seat): BlackjackSeat =>
           seat.pendingLeave
             ? {
                 ...seat,
