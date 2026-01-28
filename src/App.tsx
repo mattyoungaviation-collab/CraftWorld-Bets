@@ -56,6 +56,11 @@ type OddsRow = {
   odds: number;
   tier: string;
   tierTone: "elite" | "mid" | "low" | "new";
+  contributions: Array<{
+    masterpieceId: string;
+    masterpieceName: string;
+    position: number;
+  }>;
 };
 
 type OddsHistory = {
@@ -173,6 +178,7 @@ export default function App() {
   const [oddsLoading, setOddsLoading] = useState(false);
   const [oddsError, setOddsError] = useState("");
   const [oddsHistory, setOddsHistory] = useState<OddsHistory | null>(null);
+  const [selectedOddsPlayer, setSelectedOddsPlayer] = useState<OddsRow | null>(null);
   const [pendingBet, setPendingBet] = useState<{
     type: "live" | "future";
     pickedUid: string;
@@ -548,11 +554,16 @@ export default function App() {
   function buildOddsRows(history: Masterpiece[]) {
     const map = new Map<
       string,
-      { uid: string; name: string; avatarUrl?: string | null; placements: number[] }
+      {
+        uid: string;
+        name: string;
+        avatarUrl?: string | null;
+        placements: number[];
+        contributions: OddsRow["contributions"];
+      }
     >();
     for (const entry of history) {
       for (const row of entry.leaderboard || []) {
-        if (row.position > 3) continue;
         const key = row.profile.uid;
         if (!map.has(key)) {
           map.set(key, {
@@ -560,6 +571,7 @@ export default function App() {
             name: row.profile.displayName || row.profile.uid,
             avatarUrl: row.profile.avatarUrl,
             placements: [],
+            contributions: [],
           });
         }
         const player = map.get(key);
@@ -567,6 +579,11 @@ export default function App() {
           player.placements.push(row.position);
           if (!player.avatarUrl && row.profile.avatarUrl) player.avatarUrl = row.profile.avatarUrl;
           if (!player.name && row.profile.displayName) player.name = row.profile.displayName;
+          player.contributions.push({
+            masterpieceId: entry.id,
+            masterpieceName: entry.name,
+            position: row.position,
+          });
         }
       }
     }
@@ -589,6 +606,7 @@ export default function App() {
         odds,
         tier,
         tierTone,
+        contributions: player.contributions.slice().sort((a, b) => Number(a.masterpieceId) - Number(b.masterpieceId)),
       });
     }
 
@@ -1130,8 +1148,8 @@ export default function App() {
         <section className="card odds-card">
           <div className="section-title">Player Odds Board</div>
           <div className="subtle">
-            Sportsbook-style odds based on top-3 placements from masterpiece #1 through #{oddsHistory?.endId ?? mpId}.
-            Players with fewer than 3 placements are listed at even odds.
+            Sportsbook-style odds based on average placement across all masterpieces from #1 through #
+            {oddsHistory?.endId ?? mpId}. Players with fewer than 3 placements are listed at even odds.
           </div>
           <div className="odds-controls">
             <div className="odds-meta">
@@ -1173,7 +1191,12 @@ export default function App() {
               <div className="empty">Load the history to see veteran, mid-level, low-level, and new players.</div>
             )}
             {oddsRows.map((row) => (
-              <div className="table-row static" key={row.uid}>
+              <button
+                key={row.uid}
+                className="table-row odds-row"
+                onClick={() => setSelectedOddsPlayer(row)}
+                type="button"
+              >
                 <div className="player">
                   {row.avatarUrl ? (
                     <img
@@ -1199,7 +1222,7 @@ export default function App() {
                 <div className="cell-center">
                   <span className={`tier-pill tier-${row.tierTone}`}>{row.tier}</span>
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         </section>
@@ -1451,6 +1474,54 @@ export default function App() {
         )}
       </section>
         </>
+      )}
+
+      {selectedOddsPlayer && (
+        <div className="modal-backdrop">
+          <div className="modal odds-modal">
+            <div className="modal-header">
+              <div>
+                <div className="eyebrow">Player History</div>
+                <h2>{selectedOddsPlayer.name}</h2>
+                <div className="subtle">{selectedOddsPlayer.uid}</div>
+              </div>
+              <button className="btn" onClick={() => setSelectedOddsPlayer(null)} type="button">
+                Close
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="history-summary">
+                <div>
+                  <div className="label">Average Placement</div>
+                  <div className="title">{selectedOddsPlayer.avgPlacement.toFixed(2)}</div>
+                </div>
+                <div>
+                  <div className="label">Appearances</div>
+                  <div className="title">{selectedOddsPlayer.appearances}</div>
+                </div>
+                <div>
+                  <div className="label">Odds</div>
+                  <div className="title">{formatOdds(selectedOddsPlayer.odds)}</div>
+                </div>
+              </div>
+
+              <div className="history-list">
+                <div className="history-header">
+                  <div>Masterpiece</div>
+                  <div className="cell-center">ID</div>
+                  <div className="cell-center">Placement</div>
+                </div>
+                {selectedOddsPlayer.contributions.map((entry) => (
+                  <div className="history-row" key={`${selectedOddsPlayer.uid}-${entry.masterpieceId}`}>
+                    <div className="history-name">{entry.masterpieceName}</div>
+                    <div className="cell-center">#{entry.masterpieceId}</div>
+                    <div className="cell-center">#{entry.position}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {pendingBet && (

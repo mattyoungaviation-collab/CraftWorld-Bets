@@ -234,6 +234,11 @@ select {
   text-align: left;
 }
 
+.odds-row {
+  border: none;
+  width: 100%;
+}
+
 .table-row.static {
   cursor: default;
 }
@@ -329,6 +334,48 @@ select {
 .odds-meta .title {
   font-size: 16px;
   font-weight: 700;
+}
+
+.history-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.history-summary .title {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.history-list {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.history-header,
+.history-row {
+  display: grid;
+  grid-template-columns: 1.6fr 120px 120px;
+  align-items: center;
+  padding: 10px 14px;
+  font-size: 14px;
+}
+
+.history-header {
+  background: #f8fafc;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #64748b;
+}
+
+.history-row {
+  border-top: 1px solid #f1f5f9;
+}
+
+.history-name {
+  font-weight: 600;
 }
 
 .odds-table .table-header,
@@ -462,6 +509,11 @@ select {
   .odds-table .table-row {
     grid-template-columns: 1.4fr 100px 100px 100px 120px;
   }
+
+  .history-header,
+  .history-row {
+    grid-template-columns: 1.4fr 90px 90px;
+  }
 }
 
 @media (max-width: 640px) {
@@ -509,6 +561,20 @@ select {
 
   .positions-table .table-header div:nth-child(n + 4),
   .positions-table .table-row div:nth-child(n + 4) {
+    display: none;
+  }
+
+  .history-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .history-header,
+  .history-row {
+    grid-template-columns: 1fr 80px;
+  }
+
+  .history-header div:nth-child(3),
+  .history-row div:nth-child(3) {
     display: none;
   }
 }
