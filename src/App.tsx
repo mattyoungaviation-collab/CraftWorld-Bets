@@ -571,6 +571,7 @@ export default function App() {
         avatarUrl?: string | null;
         placements: number[];
         contributions: OddsRow["contributions"];
+        strength: number;
       }
     >();
     for (const entry of sortedHistory) {
@@ -583,6 +584,7 @@ export default function App() {
             avatarUrl: row.profile.avatarUrl,
             placements: [],
             contributions: [],
+            strength: 0,
           });
         }
         const player = map.get(key);
@@ -595,8 +597,55 @@ export default function App() {
             masterpieceName: entry.name,
             position: row.position,
           });
+          const placementScore = row.position > 0 ? 1 / row.position : 0;
+          player.strength += weight * placementScore;
         }
       }
+    }
+
+    if (map.size === 0) {
+      return [];
+    }
+
+    const baselineStrength =
+      Array.from(map.values()).reduce((sum, player) => sum + player.strength, 0) / map.size;
+    const priorWeight = 3;
+    const uncertaintyPenalty = 4;
+    const temperature = 0.9;
+
+    const adjustedStrengths = new Map<string, number>();
+    const priorStrengths: number[] = [];
+
+    for (const player of map.values()) {
+      const priorAdjusted = player.strength + priorWeight * baselineStrength;
+      priorStrengths.push(priorAdjusted);
+      adjustedStrengths.set(player.uid, priorAdjusted);
+    }
+
+    const baselineAdjusted = priorStrengths.reduce((sum, value) => sum + value, 0) / priorStrengths.length;
+
+    const finalStrengths = new Map<string, number>();
+    let maxStrength = -Infinity;
+    for (const player of map.values()) {
+      const appearances = player.placements.length;
+      const alpha = appearances / (appearances + uncertaintyPenalty);
+      const priorAdjusted = adjustedStrengths.get(player.uid) ?? baselineAdjusted;
+      const finalStrength = alpha * priorAdjusted + (1 - alpha) * baselineAdjusted;
+      finalStrengths.set(player.uid, finalStrength);
+      if (finalStrength > maxStrength) maxStrength = finalStrength;
+    }
+
+    let denominator = 0;
+    const probabilities = new Map<string, number>();
+    for (const player of map.values()) {
+      const strength = finalStrengths.get(player.uid) ?? 0;
+      const scaled = Math.exp((strength - maxStrength) / temperature);
+      probabilities.set(player.uid, scaled);
+      denominator += scaled;
+    }
+
+    for (const [uid, scaled] of probabilities.entries()) {
+      probabilities.set(uid, denominator > 0 ? scaled / denominator : 0);
     }
 
     const rows: OddsRow[] = [];
@@ -1554,6 +1603,10 @@ export default function App() {
                 <div>
                   <div className="label">Appearances</div>
                   <div className="title">{selectedOddsPlayer.appearances}</div>
+                </div>
+                <div>
+                  <div className="label">Win Chance</div>
+                  <div className="title">{formatPercent(selectedOddsPlayer.winProbability)}</div>
                 </div>
                 <div>
                   <div className="label">Odds</div>
