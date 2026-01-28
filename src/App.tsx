@@ -53,6 +53,8 @@ type OddsRow = {
   avatarUrl?: string | null;
   appearances: number;
   avgPlacement: number;
+  winPercent: number;
+  winCount: number;
   winProbability?: number;
   winChance: number;
   odds: number;
@@ -595,6 +597,8 @@ export default function App() {
       .slice()
       .sort((a, b) => Number(a.id) - Number(b.id))
       .filter((entry) => entry?.leaderboard?.length);
+    const winCounts = new Map<string, number>();
+    let totalWins = 0;
     const map = new Map<
       string,
       {
@@ -609,6 +613,11 @@ export default function App() {
     const totalEntries = sortedHistory.length;
     for (const [index, entry] of sortedHistory.entries()) {
       const weight = totalEntries > 1 ? 0.5 + index / (totalEntries - 1) : 1;
+      const winnerRow = entry.leaderboard?.find((row) => row.position === 1);
+      if (winnerRow) {
+        totalWins += 1;
+        winCounts.set(winnerRow.profile.uid, (winCounts.get(winnerRow.profile.uid) ?? 0) + 1);
+      }
       for (const row of entry.leaderboard || []) {
         const key = row.profile.uid;
         if (!map.has(key)) {
@@ -697,12 +706,16 @@ export default function App() {
       const odds = calculateSlidingOdds(appearances);
       const participationPercent = totalEntries > 0 ? (appearances / totalEntries) * 100 : 0;
       const { tier, tierTone } = getTier(participationPercent);
+      const winCount = winCounts.get(player.uid) ?? 0;
+      const winPercent = totalWins > 0 ? (winCount / totalWins) * 100 : 0;
       rows.push({
         uid: player.uid,
         name: player.name,
         avatarUrl: player.avatarUrl,
         appearances,
         avgPlacement,
+        winPercent,
+        winCount,
         winProbability: Number.isFinite(probability) ? probability : undefined,
         winChance,
         odds,
@@ -1316,7 +1329,7 @@ export default function App() {
           <div className="table odds-table">
             <div className="table-header">
               <div>Player</div>
-              <div className="numeric">Win %</div>
+              <div className="numeric">Win % (1st)</div>
               <div className="numeric">Odds</div>
               <div className="numeric">Placements</div>
               <div className="numeric">Avg Place</div>
@@ -1352,7 +1365,7 @@ export default function App() {
                     <div className="subtle">{row.uid}</div>
                   </div>
                 </div>
-                <div className="numeric">{formatPercent(row.winChance)}</div>
+                <div className="numeric">{formatPercent(row.winPercent)}</div>
                 <div className="numeric">
                   {formatOdds(row.odds)}
                 </div>
@@ -1639,8 +1652,9 @@ export default function App() {
                   <div className="title">{selectedOddsPlayer.appearances}</div>
                 </div>
                 <div>
-                  <div className="label">Win Chance</div>
-                  <div className="title">{formatPercent(selectedOddsPlayer.winProbability)}</div>
+                  <div className="label">Historical Win %</div>
+                  <div className="title">{formatPercent(selectedOddsPlayer.winPercent)}</div>
+                  <div className="subtle">{selectedOddsPlayer.winCount} total wins</div>
                 </div>
                 <div>
                   <div className="label">Odds</div>
