@@ -429,15 +429,6 @@ export default function App() {
   const autoStartCooldownRef = useRef<number | null>(null);
   const [coinDecimals, setCoinDecimals] = useState<number>(18);
   const [coinBalance, setCoinBalance] = useState<bigint | null>(null);
-  const [walletLedgerBalance, setWalletLedgerBalance] = useState<number>(0);
-  const [walletLedger, setWalletLedger] = useState<
-    Array<{ id: string; type: string; amount: number; createdAt: string; txHash?: string | null }>
-  >([]);
-  const [depositAmount, setDepositAmount] = useState<number>(0);
-  const [depositing, setDepositing] = useState(false);
-  const [withdrawAmount, setWithdrawAmount] = useState<number>(0);
-  const [withdrawTxHash, setWithdrawTxHash] = useState<string>("");
-  const [withdrawing, setWithdrawing] = useState(false);
   const [activeTab, setActiveTab] = useState<"betting" | "odds" | "blackjack">("betting");
   const [oddsRows, setOddsRows] = useState<OddsRow[]>([]);
   const [oddsLoading, setOddsLoading] = useState(false);
@@ -473,8 +464,6 @@ export default function App() {
   useEffect(() => {
     if (!wallet) {
       setCoinBalance(null);
-      setWalletLedgerBalance(0);
-      setWalletLedger([]);
     }
   }, [wallet]);
 
@@ -500,7 +489,6 @@ export default function App() {
     if (showPositions) {
       refreshWalletPositions(address);
     }
-    loadWalletLedger(address);
   }, [wallet, showPositions]);
 
   function isMasterpieceClosed(masterpiece: Masterpiece) {
@@ -579,19 +567,6 @@ export default function App() {
       const r = await fetch(`/api/wallets/${encodeURIComponent(address)}/bets`);
       const j = await r.json();
       setWalletBets(j?.bets || []);
-    } catch (e) {
-      console.error(e);
-    }
-  }
-
-  async function loadWalletLedger(address: string) {
-    try {
-      const r = await fetch(`/api/wallets/${encodeURIComponent(address)}/ledger`);
-      const j = await r.json();
-      if (!r.ok || j?.ok !== true) return;
-      const walletRecord = j?.wallet;
-      setWalletLedgerBalance(Number(walletRecord?.balance || 0));
-      setWalletLedger(Array.isArray(walletRecord?.ledger) ? walletRecord.ledger : []);
     } catch (e) {
       console.error(e);
     }
@@ -1315,7 +1290,7 @@ export default function App() {
       return;
     }
     if (!escrowAddressValid) {
-      setToast("Escrow address is invalid. Use a 0x wallet address for VITE_BET_ESCROW_ADDRESS.");
+      setToast("Escrow address is invalid. Use a 0x contract address for VITE_BET_ESCROW_ADDRESS.");
       return;
     }
     setPlacing(true);
@@ -1430,95 +1405,6 @@ export default function App() {
       setToast(`❌ Bet failed. Please try again. ${message}`);
     } finally {
       setPlacing(false);
-    }
-  }
-
-  async function handleDepositToLedger() {
-    if (!wallet) {
-      setToast("Connect your wallet to deposit.");
-      return;
-    }
-    if (!hasEscrowAddress) {
-      setToast("Missing escrow address. Set VITE_BET_ESCROW_ADDRESS to accept deposits.");
-      return;
-    }
-    if (!escrowAddressValid) {
-      setToast("Escrow address is invalid. Use a 0x wallet address for VITE_BET_ESCROW_ADDRESS.");
-      return;
-    }
-    const totalAmount = Math.floor(Number(depositAmount));
-    if (!Number.isFinite(totalAmount) || totalAmount <= 0) {
-      setToast("Deposit amount must be greater than zero.");
-      return;
-    }
-    setDepositing(true);
-    setToast("");
-    try {
-      const rawAmount = BigInt(totalAmount) * BigInt(10) ** BigInt(coinDecimals);
-      setToast("🧾 Please sign the deposit transfer in your wallet.");
-      const escrowTx = await signAndSendTransfer(escrowAddress, rawAmount);
-      setToast("⏳ Waiting for escrow confirmation...");
-      await confirmTransfer(escrowTx, escrowAddress, rawAmount);
-
-      const r = await fetch(`/api/wallets/${encodeURIComponent(wallet)}/deposit`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ amount: totalAmount, txHash: escrowTx }),
-      });
-      const j = await r.json();
-      if (!r.ok || j?.ok !== true) {
-        throw new Error(j?.error || "Deposit failed");
-      }
-      const walletRecord = j?.wallet;
-      setWalletLedgerBalance(Number(walletRecord?.balance || 0));
-      setWalletLedger(Array.isArray(walletRecord?.ledger) ? walletRecord.ledger : []);
-      setDepositAmount(0);
-      setToast(`✅ ${fmt(totalAmount)} ${COIN_SYMBOL} deposited to your in-game balance.`);
-    } catch (e: any) {
-      const message = e?.message || String(e);
-      if (message && message.includes("User rejected")) {
-        setToast("❌ Deposit canceled. No funds were moved.");
-        return;
-      }
-      setToast(`❌ Deposit failed. ${message}`);
-    } finally {
-      setDepositing(false);
-    }
-  }
-
-  async function handleWithdrawFromLedger() {
-    if (!wallet) {
-      setToast("Connect your wallet to withdraw.");
-      return;
-    }
-    const totalAmount = Math.floor(Number(withdrawAmount));
-    if (!Number.isFinite(totalAmount) || totalAmount <= 0) {
-      setToast("Withdrawal amount must be greater than zero.");
-      return;
-    }
-    setWithdrawing(true);
-    setToast("");
-    try {
-      const r = await fetch(`/api/wallets/${encodeURIComponent(wallet)}/withdraw`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ amount: totalAmount, txHash: withdrawTxHash.trim() || null }),
-      });
-      const j = await r.json();
-      if (!r.ok || j?.ok !== true) {
-        throw new Error(j?.error || "Withdrawal failed");
-      }
-      const walletRecord = j?.wallet;
-      setWalletLedgerBalance(Number(walletRecord?.balance || 0));
-      setWalletLedger(Array.isArray(walletRecord?.ledger) ? walletRecord.ledger : []);
-      setWithdrawAmount(0);
-      setWithdrawTxHash("");
-      setToast(`✅ Withdrawal recorded for ${fmt(totalAmount)} ${COIN_SYMBOL}.`);
-    } catch (e: any) {
-      const message = e?.message || String(e);
-      setToast(`❌ Withdrawal failed. ${message}`);
-    } finally {
-      setWithdrawing(false);
     }
   }
 
@@ -1714,10 +1600,6 @@ export default function App() {
                 : "Wallet not connected"}
             </strong>
           </div>
-          <div className="price-pill">
-            <div>In-game {COIN_SYMBOL}</div>
-            <strong>{wallet ? fmt(walletLedgerBalance) : "—"}</strong>
-          </div>
           <button
             className="btn btn-primary"
             onClick={handleWalletAction}
@@ -1732,37 +1614,6 @@ export default function App() {
               ? `Disconnect: ${wallet.slice(0, 6)}...${wallet.slice(-4)}`
               : "Connect Wallet"}
           </button>
-          <div className="ledger-actions">
-            <input
-              type="number"
-              min={0}
-              value={depositAmount || ""}
-              onChange={(e) => setDepositAmount(Number(e.target.value))}
-              placeholder={`${COIN_SYMBOL} deposit`}
-              disabled={!wallet}
-            />
-            <button className="btn" onClick={handleDepositToLedger} disabled={!wallet || depositing}>
-              {depositing ? "Depositing..." : "Transfer to escrow"}
-            </button>
-            <input
-              type="number"
-              min={0}
-              value={withdrawAmount || ""}
-              onChange={(e) => setWithdrawAmount(Number(e.target.value))}
-              placeholder={`${COIN_SYMBOL} withdraw`}
-              disabled={!wallet}
-            />
-            <input
-              type="text"
-              value={withdrawTxHash}
-              onChange={(e) => setWithdrawTxHash(e.target.value)}
-              placeholder="Escrow payout tx hash (optional)"
-              disabled={!wallet}
-            />
-            <button className="btn" onClick={handleWithdrawFromLedger} disabled={!wallet || withdrawing}>
-              {withdrawing ? "Withdrawing..." : "Record payout"}
-            </button>
-          </div>
           {!walletConnectEnabled && (
             <div className="subtle">Set VITE_WALLETCONNECT_PROJECT_ID in your .env to enable wallet connections.</div>
           )}
@@ -1826,7 +1677,7 @@ export default function App() {
               )}
               {hasEscrowAddress && !escrowAddressValid && (
                 <div className="subtle" style={{ marginTop: 6 }}>
-                  Escrow address must be a valid 0x wallet address.
+                  Escrow address must be a valid 0x contract address.
                 </div>
               )}
             </div>
@@ -2276,23 +2127,6 @@ export default function App() {
             )}
           </div>
 
-          {wallet && walletLedger.length > 0 && (
-            <div className="ledger-log">
-              <div className="section-title">Wallet Ledger</div>
-              <ul>
-                {walletLedger.slice(-5).reverse().map((entry) => (
-                  <li key={entry.id}>
-                    <span>{new Date(entry.createdAt).toLocaleTimeString()}</span>
-                    <span>{entry.type}</span>
-                    <span className={entry.amount >= 0 ? "ledger-positive" : "ledger-negative"}>
-                      {entry.amount >= 0 ? "+" : ""}
-                      {fmt(entry.amount)} {COIN_SYMBOL}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
         </section>
       )}
 
@@ -2309,11 +2143,12 @@ export default function App() {
               <strong>{SERVICE_FEE_ADDRESS}</strong> on Ronin.
             </li>
             <li>
-              Winners are paid back in {COIN_SYMBOL} to the same wallet address that placed the bet, after the
-              masterpiece completes and results are verified.
+              The escrow smart contract resolves winners and automatically pays out {COIN_SYMBOL} to the wallet that
+              placed the winning bet once results are verified.
             </li>
             <li>
-              Wagers are escrowed to <strong>{escrowAddress || "an escrow contract"}</strong> on Ronin to fund payouts.
+              Losing wagers are retained by the escrow contract, while winners are paid directly from{" "}
+              <strong>{escrowAddress || "the escrow contract"}</strong> on Ronin.
             </li>
             <li>
               Betting is for entertainment only and does not constitute investment advice. CraftWorld Bets is not
@@ -2657,8 +2492,8 @@ export default function App() {
                   final, non-refundable, and may not be canceled once the transaction is signed.
                 </p>
                 <p>
-                  Winners are paid back to the same wallet address that submitted the bet after the masterpiece closes
-                  and results are verified.
+                  The escrow contract resolves the outcome and automatically pays winners after the masterpiece closes
+                  and results are verified. Losing wagers remain in the contract.
                 </p>
                 <p>
                   CraftWorld Bets is not responsible for wallet errors, network congestion, failed transactions, or
