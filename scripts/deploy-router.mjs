@@ -4,6 +4,28 @@ import process from "process";
 import solc from "solc";
 import { ContractFactory, JsonRpcProvider, Wallet } from "ethers";
 
+const envPath = path.resolve(".env");
+
+if (fs.existsSync(envPath)) {
+  const envContents = fs.readFileSync(envPath, "utf8");
+  const lines = envContents.split(/\r?\n/);
+
+  for (const line of lines) {
+    if (!line || /^\s*#/.test(line)) {
+      continue;
+    }
+
+    const [rawKey, ...rest] = line.split("=");
+    const key = rawKey?.trim();
+
+    if (!key || process.env[key]) {
+      continue;
+    }
+
+    process.env[key] = rest.join("=").trim();
+  }
+}
+
 const {
   RONIN_RPC,
   DEPLOYER_PRIVATE_KEY,
@@ -85,6 +107,12 @@ const outputPayload = {
   feeBps,
   deployedAt: new Date().toISOString(),
   network: RONIN_RPC,
+  compilerVersion: solc.version(),
+  optimizer: {
+    enabled: true,
+    runs: 200,
+  },
+  constructorArgs: [FEE_RECIPIENT, ESCROW_RECIPIENT, feeBps],
 };
 
 fs.writeFileSync("router-deployment.json", `${JSON.stringify(outputPayload, null, 2)}\n`);

@@ -95,3 +95,16 @@ npm run deploy:router
 
 The deployment script compiles `contracts/BetPaymentRouter.sol`, deploys it to Ronin, and writes a `router-deployment.json`
 file containing the deployed address and configuration.
+
+### Verifying the router on Ronin
+
+To make the contract readable on the Ronin explorer, verify it after deployment:
+
+1. Open `router-deployment.json` and copy the deployed `address`.
+2. Use the Ronin explorer's **Verify & Publish** flow with:
+   - **Compiler version:** from `router-deployment.json` (`compilerVersion`).
+   - **Optimizer:** enabled, runs `200`.
+   - **Constructor args:** `feeRecipient`, `escrowRecipient`, `feeBps` (in that order).
+3. Paste the source from `contracts/BetPaymentRouter.sol`.
+
+Once verified, the explorer will show the full source and ABI for anyone to read.
