@@ -112,7 +112,7 @@ function formatOdds(odds: number) {
   return `${odds.toFixed(2)}x`;
 }
 
-function formatPercent(value: number) {
+function formatPercent(value?: number | null) {
   if (!Number.isFinite(value)) return "—";
   return `${value.toFixed(1)}%`;
 }
@@ -574,7 +574,9 @@ export default function App() {
         strength: number;
       }
     >();
-    for (const entry of sortedHistory) {
+    const totalEntries = sortedHistory.length;
+    for (const [index, entry] of sortedHistory.entries()) {
+      const weight = totalEntries > 1 ? 0.5 + index / (totalEntries - 1) : 1;
       for (const row of entry.leaderboard || []) {
         const key = row.profile.uid;
         if (!map.has(key)) {
