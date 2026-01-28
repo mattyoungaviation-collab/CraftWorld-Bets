@@ -129,7 +129,7 @@ const SERVICE_FEE_BPS = 500;
 const SERVICE_FEE_ADDRESS = "0xeED0491B506C78EA7fD10988B1E98A3C88e1C630";
 const BET_ESCROW_ADDRESS =
   (import.meta.env.VITE_BET_ESCROW_ADDRESS as string | undefined) ||
-  "0x47181FeB839dE75697064CC558eBb470E86449b9";
+  "0xe455CFd27fd0C1DEfb57Ab371092C4Cf60D4D723";
 const BLACKJACK_DECKS = 6;
 const BLACKJACK_HOUSE_EDGE = 0.6;
 const BLACKJACK_MIN_BET = 25;
@@ -1821,7 +1821,7 @@ export default function App() {
               </div>
               {!hasEscrowAddress && (
                 <div className="subtle" style={{ marginTop: 6 }}>
-                  Set <strong>VITE_BET_ESCROW_ADDRESS</strong> (a 0x wallet address) to route wagers to escrow.
+                  Set <strong>VITE_BET_ESCROW_ADDRESS</strong> (a 0x contract address) to route wagers to escrow.
                 </div>
               )}
               {hasEscrowAddress && !escrowAddressValid && (
@@ -2313,7 +2313,7 @@ export default function App() {
               masterpiece completes and results are verified.
             </li>
             <li>
-              Wagers are escrowed to <strong>{escrowAddress || "an escrow wallet"}</strong> on Ronin to fund payouts.
+              Wagers are escrowed to <strong>{escrowAddress || "an escrow contract"}</strong> on Ronin to fund payouts.
             </li>
             <li>
               Betting is for entertainment only and does not constitute investment advice. CraftWorld Bets is not
@@ -2639,7 +2639,7 @@ export default function App() {
                     {fmt(wagerAmount)} {COIN_SYMBOL}
                   </div>
                 <div className="subtle">
-                  Escrowed for payouts to {escrowAddress || "an escrow wallet"}
+                  Escrowed for payouts to {escrowAddress || "an escrow contract"}
                 </div>
                 </div>
                 <div>
