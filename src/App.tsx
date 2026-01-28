@@ -100,6 +100,15 @@ type BlackjackSeat = {
   lastOutcome?: "win" | "lose" | "push" | "blackjack";
 };
 
+type BlackjackState = {
+  seats: BlackjackSeat[];
+  dealer: Card[];
+  shoe: Card[];
+  phase: "idle" | "player" | "dealer" | "settled";
+  activeSeat: number | null;
+  log: string[];
+};
+
 const COIN_SYMBOL = "$COIN";
 const COIN_CONTRACT = "0x7DC167E270D5EF683CEAF4AFCDF2EFBDD667A9A7";
 const ERC20_BALANCE_OF = "0x70a08231";
@@ -1387,274 +1396,94 @@ export default function App() {
     );
   }, [blackjackSeats, blackjackDealer, blackjackOddsDeck]);
 
-  function appendBlackjackLog(message: string) {
-    setBlackjackLog((prev) => [message, ...prev].slice(0, 6));
+  function applyBlackjackState(state: BlackjackState) {
+    setBlackjackSeats(state.seats);
+    setBlackjackDealer(state.dealer);
+    setBlackjackShoe(state.shoe);
+    setBlackjackPhase(state.phase);
+    setBlackjackActiveSeat(state.activeSeat);
+    setBlackjackLog(state.log || []);
+  }
+
+  async function fetchBlackjackState() {
+    try {
+      const r = await fetch("/api/blackjack/state");
+      const j = await r.json();
+      if (!r.ok || !j?.state) return;
+      applyBlackjackState(j.state as BlackjackState);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  useEffect(() => {
+    let interval: number | null = null;
+    fetchBlackjackState();
+    if (activeTab === "blackjack") {
+      interval = window.setInterval(() => {
+        fetchBlackjackState();
+      }, 2000);
+    }
+    return () => {
+      if (interval !== null) {
+        window.clearInterval(interval);
+      }
+    };
+  }, [activeTab]);
+
+  async function sendBlackjackAction(endpoint: string, payload?: Record<string, unknown>) {
+    try {
+      const r = await fetch(endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload || {}),
+      });
+      const j = await r.json();
+      if (!r.ok || !j?.state) {
+        throw new Error(j?.error || "Blackjack update failed");
+      }
+      applyBlackjackState(j.state as BlackjackState);
+    } catch (e) {
+      console.error(e);
+    }
   }
 
   function updateSeat(id: number, updates: Partial<BlackjackSeat>) {
-    setBlackjackSeats((prev) =>
-      prev.map((seat) => (seat.id === id ? { ...seat, ...updates } : seat))
-    );
+    setBlackjackSeats((prev) => prev.map((seat) => (seat.id === id ? { ...seat, ...updates } : seat)));
+    sendBlackjackAction("/api/blackjack/seat", { seatId: id, ...updates });
   }
 
   function joinSeat(id: number) {
-    setBlackjackSeats((prev) =>
-      prev.map((seat) =>
-        seat.id === id
-          ? {
-              ...seat,
-              joined: true,
-              status: "waiting",
-              pendingLeave: false,
-              hand: [],
-              lastOutcome: undefined,
-            }
-          : seat
-      )
-    );
-    appendBlackjackLog(`Seat ${id + 1} joined the table.`);
+    const name = username.trim();
+    sendBlackjackAction("/api/blackjack/join", { seatId: id, name: name || undefined });
   }
 
   function leaveSeat(id: number) {
-    setBlackjackSeats((prev) =>
-      prev.map((seat) => {
-        if (seat.id !== id) return seat;
-        if (!seat.joined) return seat;
-        if (blackjackPhase === "player" || blackjackPhase === "dealer") {
-          return { ...seat, pendingLeave: true };
-        }
-        return {
-          ...seat,
-          joined: false,
-          status: "empty",
-          hand: [],
-          pendingLeave: false,
-          lastOutcome: undefined,
-        };
-      })
-    );
-    appendBlackjackLog(`Seat ${id + 1} will leave after this round.`);
+    sendBlackjackAction("/api/blackjack/leave", { seatId: id });
   }
 
   function shuffleShoe() {
-    if (blackjackPhase !== "idle" && blackjackPhase !== "settled") return;
-    setBlackjackShoe(buildShoe());
-    appendBlackjackLog("Dealer shuffled a fresh shoe.");
+    sendBlackjackAction("/api/blackjack/shuffle");
   }
 
   function startBlackjackRound() {
-    const activeSeats = blackjackSeats.filter((seat) => seat.joined);
-    if (activeSeats.length === 0) {
-      appendBlackjackLog("No players seated. Join a seat to start a round.");
-      return;
-    }
-    let shoe = blackjackShoe;
-    const requiredCards = activeSeats.length * 2 + 2;
-    if (shoe.length < requiredCards) {
-      shoe = buildShoe();
-      appendBlackjackLog("Shoe re-shuffled for the next hand.");
-    }
-    const nextShoe = [...shoe];
-    // We ensure the shoe has enough cards before dealing, so this is safe.
-    const draw = () => nextShoe.shift()!;
-    const nextDealer: Card[] = [];
-    const dealtSeats: BlackjackSeat[] = blackjackSeats.map((seat): BlackjackSeat => {
-      if (!seat.joined) return seat;
-      const bet = Math.max(BLACKJACK_MIN_BET, Math.min(seat.bet, seat.bankroll));
-      if (bet <= 0 || seat.bankroll < bet) {
-        return { ...seat, status: "waiting", hand: [], lastOutcome: undefined };
-      }
-      const hand: Card[] = [draw(), draw()];
-      const status: SeatStatus = isBlackjack(hand) ? "blackjack" : "playing";
-      return {
-        ...seat,
-        bet,
-        bankroll: seat.bankroll - bet,
-        hand,
-        status,
-        lastOutcome: undefined,
-      };
-    });
-    nextDealer.push(draw(), draw());
-    const firstPlayingIndex = dealtSeats.findIndex((seat) => seat.joined && seat.status === "playing");
-    setBlackjackSeats(dealtSeats);
-    setBlackjackDealer(nextDealer);
-    setBlackjackShoe(nextShoe);
-    if (firstPlayingIndex === -1) {
-      setBlackjackPhase("dealer");
-      setBlackjackActiveSeat(null);
-      resolveDealerAndPayout(dealtSeats, nextDealer);
-    } else {
-      setBlackjackPhase("player");
-      setBlackjackActiveSeat(firstPlayingIndex);
-    }
-    appendBlackjackLog("Cards are dealt. Players act in seat order.");
-  }
-
-  function advanceToDealerIfDone(nextSeats: BlackjackSeat[]) {
-    const nextIndex = nextSeats.findIndex((seat) => seat.joined && seat.status === "playing");
-    if (nextIndex === -1) {
-      setBlackjackPhase("dealer");
-      setBlackjackActiveSeat(null);
-      resolveDealerAndPayout(nextSeats);
-    } else {
-      setBlackjackActiveSeat(nextIndex);
-    }
+    sendBlackjackAction("/api/blackjack/start");
   }
 
   function handleHit(seatId: number) {
-    if (blackjackPhase !== "player") return;
-    setBlackjackSeats((prev) => {
-      const seatIndex = prev.findIndex((seat) => seat.id === seatId);
-      if (seatIndex === -1) return prev;
-      if (blackjackActiveSeat !== seatIndex) return prev;
-      const nextSeats = [...prev];
-      const seat = nextSeats[seatIndex];
-      if (seat.status !== "playing") return prev;
-      const nextShoe = [...blackjackShoe];
-      const card = nextShoe.shift();
-      if (!card) return prev;
-      seat.hand = [...seat.hand, card];
-      const totals = getHandTotals(seat.hand);
-      if (totals.total > 21) {
-        seat.status = "busted";
-      } else if (totals.total === 21) {
-        seat.status = "stood";
-      }
-      setBlackjackShoe(nextShoe);
-      if (seat.status !== "playing") {
-        advanceToDealerIfDone(nextSeats);
-      }
-      return nextSeats;
-    });
+    sendBlackjackAction("/api/blackjack/hit", { seatId });
   }
 
   function handleStand(seatId: number) {
-    if (blackjackPhase !== "player") return;
-    setBlackjackSeats((prev) => {
-      const seatIndex = prev.findIndex((seat) => seat.id === seatId);
-      if (seatIndex === -1) return prev;
-      if (blackjackActiveSeat !== seatIndex) return prev;
-      const nextSeats = [...prev];
-      nextSeats[seatIndex] = { ...nextSeats[seatIndex], status: "stood" };
-      advanceToDealerIfDone(nextSeats);
-      return nextSeats;
-    });
+    sendBlackjackAction("/api/blackjack/stand", { seatId });
   }
 
   function handleDouble(seatId: number) {
-    if (blackjackPhase !== "player") return;
-    setBlackjackSeats((prev) => {
-      const seatIndex = prev.findIndex((seat) => seat.id === seatId);
-      if (seatIndex === -1) return prev;
-      if (blackjackActiveSeat !== seatIndex) return prev;
-      const nextSeats = [...prev];
-      const seat = nextSeats[seatIndex];
-      if (seat.status !== "playing" || seat.hand.length !== 2) return prev;
-      if (seat.bankroll < seat.bet) return prev;
-      const nextShoe = [...blackjackShoe];
-      const card = nextShoe.shift();
-      if (!card) return prev;
-      seat.hand = [...seat.hand, card];
-      seat.bankroll -= seat.bet;
-      seat.bet *= 2;
-      const totals = getHandTotals(seat.hand);
-      seat.status = totals.total > 21 ? "busted" : "stood";
-      setBlackjackShoe(nextShoe);
-      advanceToDealerIfDone(nextSeats);
-      return nextSeats;
-    });
-  }
-
-  function resolveDealerAndPayout(currentSeats: BlackjackSeat[], dealerOverride?: Card[]) {
-    setBlackjackShoe((prevShoe) => {
-      const nextShoe = [...prevShoe];
-      const baseDealer = dealerOverride ?? blackjackDealer;
-      const nextDealer = baseDealer.length > 0 ? [...baseDealer] : [];
-      while (nextDealer.length < 2 && nextShoe.length > 0) {
-        nextDealer.push(nextShoe.shift() as Card);
-      }
-      while (true) {
-        const totals = getHandTotals(nextDealer);
-        if (totals.total > 21) break;
-        if (totals.total > 17) break;
-        if (totals.total === 17 && !totals.isSoft) break;
-        if (nextShoe.length === 0) break;
-        nextDealer.push(nextShoe.shift() as Card);
-      }
-      const dealerTotalsFinal = getHandTotals(nextDealer);
-      const dealerHasBlackjack = isBlackjack(nextDealer);
-      const settledSeats: BlackjackSeat[] = currentSeats.map((seat): BlackjackSeat => {
-        if (!seat.joined || seat.status === "waiting" || seat.status === "empty") return seat;
-        const playerTotals = getHandTotals(seat.hand);
-        let payout = 0;
-        let outcome: BlackjackSeat["lastOutcome"] = "lose";
-        if (playerTotals.total > 21) {
-          payout = 0;
-          outcome = "lose";
-        } else if (dealerHasBlackjack && isBlackjack(seat.hand)) {
-          payout = seat.bet;
-          outcome = "push";
-        } else if (isBlackjack(seat.hand)) {
-          payout = seat.bet * 2.5;
-          outcome = "blackjack";
-        } else if (dealerTotalsFinal.total > 21) {
-          payout = seat.bet * 2;
-          outcome = "win";
-        } else if (playerTotals.total > dealerTotalsFinal.total) {
-          payout = seat.bet * 2;
-          outcome = "win";
-        } else if (playerTotals.total === dealerTotalsFinal.total) {
-          payout = seat.bet;
-          outcome = "push";
-        }
-        return {
-          ...seat,
-          bankroll: seat.bankroll + payout,
-          status: "done",
-          lastOutcome: outcome,
-        };
-      });
-      setBlackjackDealer(nextDealer);
-      setBlackjackSeats(
-        settledSeats.map((seat): BlackjackSeat =>
-          seat.pendingLeave
-            ? {
-                ...seat,
-                joined: false,
-                status: "empty",
-                hand: [],
-                pendingLeave: false,
-                lastOutcome: undefined,
-              }
-            : seat
-        )
-      );
-      setBlackjackPhase("settled");
-      appendBlackjackLog(
-        dealerTotalsFinal.total > 21 ? "Dealer busts. Payouts settled." : "Dealer stands. Payouts settled."
-      );
-      return nextShoe;
-    });
+    sendBlackjackAction("/api/blackjack/double", { seatId });
   }
 
   function resetBlackjackRound() {
-    setBlackjackSeats((prev) =>
-      prev.map((seat) =>
-        seat.joined
-          ? {
-              ...seat,
-              hand: [],
-              status: "waiting",
-              bet: Math.max(BLACKJACK_MIN_BET, seat.bet),
-              lastOutcome: undefined,
-            }
-          : seat
-      )
-    );
-    setBlackjackDealer([]);
-    setBlackjackPhase("idle");
-    setBlackjackActiveSeat(null);
+    sendBlackjackAction("/api/blackjack/reset");
   }
 
   const feeAmount = useMemo(() => Math.floor((amount * SERVICE_FEE_BPS) / 10000), [amount]);
