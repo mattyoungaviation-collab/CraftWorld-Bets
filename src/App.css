@@ -80,7 +80,11 @@
 }
 
 .ledger-actions input {
-  width: 140px;
+  width: 160px;
+}
+
+.ledger-actions input[type="text"] {
+  width: 240px;
 }
 
 .price-pill {

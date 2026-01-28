@@ -432,6 +432,9 @@ export default function App() {
   >([]);
   const [depositAmount, setDepositAmount] = useState<number>(0);
   const [depositing, setDepositing] = useState(false);
+  const [withdrawAmount, setWithdrawAmount] = useState<number>(0);
+  const [withdrawTxHash, setWithdrawTxHash] = useState<string>("");
+  const [withdrawing, setWithdrawing] = useState(false);
   const [activeTab, setActiveTab] = useState<"betting" | "odds" | "blackjack">("betting");
   const [oddsRows, setOddsRows] = useState<OddsRow[]>([]);
   const [oddsLoading, setOddsLoading] = useState(false);
@@ -1480,6 +1483,42 @@ export default function App() {
     }
   }
 
+  async function handleWithdrawFromLedger() {
+    if (!wallet) {
+      setToast("Connect your wallet to withdraw.");
+      return;
+    }
+    const totalAmount = Math.floor(Number(withdrawAmount));
+    if (!Number.isFinite(totalAmount) || totalAmount <= 0) {
+      setToast("Withdrawal amount must be greater than zero.");
+      return;
+    }
+    setWithdrawing(true);
+    setToast("");
+    try {
+      const r = await fetch(`/api/wallets/${encodeURIComponent(wallet)}/withdraw`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ amount: totalAmount, txHash: withdrawTxHash.trim() || null }),
+      });
+      const j = await r.json();
+      if (!r.ok || j?.ok !== true) {
+        throw new Error(j?.error || "Withdrawal failed");
+      }
+      const walletRecord = j?.wallet;
+      setWalletLedgerBalance(Number(walletRecord?.balance || 0));
+      setWalletLedger(Array.isArray(walletRecord?.ledger) ? walletRecord.ledger : []);
+      setWithdrawAmount(0);
+      setWithdrawTxHash("");
+      setToast(`✅ Withdrawal recorded for ${fmt(totalAmount)} ${COIN_SYMBOL}.`);
+    } catch (e: any) {
+      const message = e?.message || String(e);
+      setToast(`❌ Withdrawal failed. ${message}`);
+    } finally {
+      setWithdrawing(false);
+    }
+  }
+
   const dealerTotals = useMemo(() => getHandTotals(blackjackDealer), [blackjackDealer]);
   const blackjackOddsDeck = useMemo(() => {
     if (blackjackPhase === "player") {
@@ -1546,6 +1585,14 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [activeTab]);
 
+  useEffect(() => {
+    if (!wallet || activeTab !== "blackjack") return;
+    const interval = window.setInterval(() => {
+      loadWalletLedger(wallet);
+    }, 5000);
+    return () => window.clearInterval(interval);
+  }, [activeTab, wallet]);
+
   async function sendBlackjackAction(endpoint: string, payload?: Record<string, unknown>) {
     try {
       const r = await fetch(endpoint, {
@@ -1565,7 +1612,7 @@ export default function App() {
 
   function updateSeat(id: number, updates: Partial<BlackjackSeat>) {
     setBlackjackSeats((prev) => prev.map((seat) => (seat.id === id ? { ...seat, ...updates } : seat)));
-    sendBlackjackAction("/api/blackjack/seat", { seatId: id, ...updates });
+    sendBlackjackAction("/api/blackjack/seat", { seatId: id, walletAddress: wallet, ...updates });
   }
 
   function joinSeat(id: number) {
@@ -1578,7 +1625,7 @@ export default function App() {
   }
 
   function leaveSeat(id: number) {
-    sendBlackjackAction("/api/blackjack/leave", { seatId: id });
+    sendBlackjackAction("/api/blackjack/leave", { seatId: id, walletAddress: wallet });
   }
 
   function shuffleShoe() {
@@ -1590,15 +1637,19 @@ export default function App() {
   }
 
   function handleHit(seatId: number) {
-    sendBlackjackAction("/api/blackjack/hit", { seatId });
+    sendBlackjackAction("/api/blackjack/hit", { seatId, walletAddress: wallet });
   }
 
   function handleStand(seatId: number) {
-    sendBlackjackAction("/api/blackjack/stand", { seatId });
+    sendBlackjackAction("/api/blackjack/stand", { seatId, walletAddress: wallet });
   }
 
   function handleDouble(seatId: number) {
-    sendBlackjackAction("/api/blackjack/double", { seatId });
+    sendBlackjackAction("/api/blackjack/double", { seatId, walletAddress: wallet });
+  }
+
+  function handleSplit(seatId: number) {
+    sendBlackjackAction("/api/blackjack/split", { seatId, walletAddress: wallet });
   }
 
   function handleSplit(seatId: number) {
@@ -1673,6 +1724,24 @@ export default function App() {
             />
             <button className="btn" onClick={handleDepositToLedger} disabled={!wallet || depositing}>
               {depositing ? "Depositing..." : "Transfer to escrow"}
+            </button>
+            <input
+              type="number"
+              min={0}
+              value={withdrawAmount || ""}
+              onChange={(e) => setWithdrawAmount(Number(e.target.value))}
+              placeholder={`${COIN_SYMBOL} withdraw`}
+              disabled={!wallet}
+            />
+            <input
+              type="text"
+              value={withdrawTxHash}
+              onChange={(e) => setWithdrawTxHash(e.target.value)}
+              placeholder="Escrow payout tx hash (optional)"
+              disabled={!wallet}
+            />
+            <button className="btn" onClick={handleWithdrawFromLedger} disabled={!wallet || withdrawing}>
+              {withdrawing ? "Withdrawing..." : "Record payout"}
             </button>
           </div>
           {!walletConnectEnabled && (
@@ -2023,11 +2092,12 @@ export default function App() {
           <div className="blackjack-seats">
             {blackjackSeats.map((seat, index) => {
               const odds = blackjackOdds[index];
+              const isOwner = seat.walletAddress && wallet ? seat.walletAddress === wallet : false;
               const isActive = blackjackActiveSeat === index && blackjackPhase === "player";
               const activeHandIndex = isActive ? blackjackActiveHand ?? seat.activeHand : seat.activeHand;
               const activeHand = seat.hands[activeHandIndex] || [];
               const activeBet = seat.bets[activeHandIndex] ?? seat.bet;
-              const canAct = isActive && seat.handStatuses[activeHandIndex] === "playing";
+              const canAct = isActive && seat.handStatuses[activeHandIndex] === "playing" && isOwner;
               const canSplit =
                 canAct &&
                 seat.hands.length < 2 &&
@@ -2045,7 +2115,7 @@ export default function App() {
                       <div className="subtle">{seat.joined ? seat.name || "Player" : "Open seat"}</div>
                     </div>
                     {seat.joined ? (
-                      <button className="btn btn-ghost" onClick={() => leaveSeat(seat.id)}>
+                      <button className="btn btn-ghost" onClick={() => leaveSeat(seat.id)} disabled={!isOwner}>
                         {seat.pendingLeave ? "Leaving..." : "Leave"}
                       </button>
                     ) : (
@@ -2064,7 +2134,7 @@ export default function App() {
                             value={seat.name}
                             onChange={(e) => updateSeat(seat.id, { name: e.target.value })}
                             placeholder="Player name"
-                            disabled={blackjackPhase === "player" || blackjackPhase === "dealer"}
+                            disabled={blackjackPhase === "player" || blackjackPhase === "dealer" || !isOwner}
                           />
                         </div>
                         <div>
@@ -2080,7 +2150,7 @@ export default function App() {
                             min={BLACKJACK_MIN_BET}
                             value={seat.bet}
                             onChange={(e) => updateSeat(seat.id, { bet: Number(e.target.value) })}
-                            disabled={blackjackPhase === "player" || blackjackPhase === "dealer"}
+                            disabled={blackjackPhase === "player" || blackjackPhase === "dealer" || !isOwner}
                           />
                         </div>
                       </div>

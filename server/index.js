@@ -247,6 +247,17 @@ function persistBlackjackUpdates() {
   persistBlackjackState();
 }
 
+function requireSeatOwner(seatId, walletAddress) {
+  const seat = blackjackState.seats.find((s) => s.id === seatId);
+  if (!seat || !seat.joined) return { error: "Seat not found" };
+  const normalized = normalizeWallet(walletAddress);
+  if (!normalized) return { error: "walletAddress required" };
+  if (!seat.walletAddress || seat.walletAddress !== normalized) {
+    return { error: "Seat is owned by a different wallet" };
+  }
+  return { ok: true, seat };
+}
+
 function attachBetToWallet(address, betId) {
   const record = ensureWalletRecord(address);
   if (!record) return;
@@ -281,6 +292,8 @@ app.post("/api/blackjack/join", (req, res) => {
 app.post("/api/blackjack/leave", (req, res) => {
   const seatId = Number(req.body?.seatId);
   if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
+  const ownership = requireSeatOwner(seatId, req.body?.walletAddress);
+  if (ownership.error) return res.status(403).json({ error: ownership.error });
   const result = leaveSeat(blackjackState, seatId);
   if (result.error) return res.status(400).json({ error: result.error });
   persistBlackjackUpdates();
@@ -290,6 +303,8 @@ app.post("/api/blackjack/leave", (req, res) => {
 app.post("/api/blackjack/seat", (req, res) => {
   const seatId = Number(req.body?.seatId);
   if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
+  const ownership = requireSeatOwner(seatId, req.body?.walletAddress);
+  if (ownership.error) return res.status(403).json({ error: ownership.error });
   const result = updateSeat(blackjackState, seatId, req.body || {});
   if (result.error) return res.status(400).json({ error: result.error });
   persistBlackjackUpdates();
@@ -313,6 +328,8 @@ app.post("/api/blackjack/start", (_req, res) => {
 app.post("/api/blackjack/hit", (req, res) => {
   const seatId = Number(req.body?.seatId);
   if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
+  const ownership = requireSeatOwner(seatId, req.body?.walletAddress);
+  if (ownership.error) return res.status(403).json({ error: ownership.error });
   const result = hit(blackjackState, seatId);
   if (result.error) return res.status(400).json({ error: result.error });
   persistBlackjackUpdates();
@@ -322,6 +339,8 @@ app.post("/api/blackjack/hit", (req, res) => {
 app.post("/api/blackjack/stand", (req, res) => {
   const seatId = Number(req.body?.seatId);
   if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
+  const ownership = requireSeatOwner(seatId, req.body?.walletAddress);
+  if (ownership.error) return res.status(403).json({ error: ownership.error });
   const result = stand(blackjackState, seatId);
   if (result.error) return res.status(400).json({ error: result.error });
   persistBlackjackUpdates();
@@ -331,6 +350,8 @@ app.post("/api/blackjack/stand", (req, res) => {
 app.post("/api/blackjack/double", (req, res) => {
   const seatId = Number(req.body?.seatId);
   if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
+  const ownership = requireSeatOwner(seatId, req.body?.walletAddress);
+  if (ownership.error) return res.status(403).json({ error: ownership.error });
   const result = doubleDown(blackjackState, seatId);
   if (result.error) return res.status(400).json({ error: result.error });
   persistBlackjackUpdates();
@@ -340,6 +361,8 @@ app.post("/api/blackjack/double", (req, res) => {
 app.post("/api/blackjack/split", (req, res) => {
   const seatId = Number(req.body?.seatId);
   if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
+  const ownership = requireSeatOwner(seatId, req.body?.walletAddress);
+  if (ownership.error) return res.status(403).json({ error: ownership.error });
   const result = splitHand(blackjackState, seatId);
   if (result.error) return res.status(400).json({ error: result.error });
   persistBlackjackUpdates();
@@ -440,6 +463,32 @@ app.post("/api/wallets/:address/deposit", (req, res) => {
     const existing = record.ledger?.find((entry) => entry.txHash && entry.txHash === txHash);
     if (txHash && existing) return res.status(400).json({ error: "deposit already recorded" });
     addLedgerEntry(normalized, { type: "deposit", amount, txHash: txHash || null });
+    blackjackState.seats.forEach((seat) => {
+      if (seat.joined && seat.walletAddress === normalized) {
+        seat.bankroll = Number(record.balance || 0);
+      }
+    });
+    persistBlackjackUpdates();
+    res.json({ ok: true, wallet: record });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.post("/api/wallets/:address/withdraw", (req, res) => {
+  try {
+    const normalized = normalizeWallet(req.params.address);
+    if (!normalized) return res.status(400).json({ error: "invalid address" });
+    const amount = Number(req.body?.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ error: "amount must be positive" });
+    }
+    const record = ensureWalletRecord(normalized);
+    if (record.balance < amount) return res.status(400).json({ error: "insufficient balance" });
+    const txHash = String(req.body?.txHash || "");
+    const existing = record.ledger?.find((entry) => entry.txHash && entry.txHash === txHash);
+    if (txHash && existing) return res.status(400).json({ error: "withdrawal already recorded" });
+    addLedgerEntry(normalized, { type: "withdrawal", amount: -amount, txHash: txHash || null });
     blackjackState.seats.forEach((seat) => {
       if (seat.joined && seat.walletAddress === normalized) {
         seat.bankroll = Number(record.balance || 0);
