@@ -543,12 +543,18 @@ export default function App() {
     return { tier: "Low-Level", tierTone: "low" as const };
   }
 
-  function computeOdds(avgPlacement: number, appearances: number) {
+  function computeOdds(avgPlacement: number, avgFieldSize: number, appearances: number) {
     if (appearances < 3) return 2;
-    const baseChance = Math.min(0.65, Math.max(0.18, 0.65 - (avgPlacement - 1) * 0.2));
-    const stability = Math.min(1, appearances / 8);
-    const adjustedChance = Math.max(0.12, baseChance * (0.6 + 0.4 * stability));
-    return 1 / adjustedChance;
+    const normalizedPlacement = avgFieldSize > 1 ? (avgFieldSize - avgPlacement) / (avgFieldSize - 1) : 0.5;
+    const sampleWeight = Math.min(1, appearances / 12);
+    const blendedScore = 0.5 * (1 - sampleWeight) + normalizedPlacement * sampleWeight;
+    const curvedScore = Math.pow(Math.min(1, Math.max(0, blendedScore)), 1.3);
+    const minProbability = 0.04;
+    const maxProbability = 0.55;
+    const baseProbability = minProbability + (maxProbability - minProbability) * curvedScore;
+    const vig = 0.07;
+    const marketProbability = Math.min(0.9, baseProbability * (1 + vig));
+    return 1 / marketProbability;
   }
 
   function buildOddsRows(history: Masterpiece[]) {
@@ -559,6 +565,7 @@ export default function App() {
         name: string;
         avatarUrl?: string | null;
         placements: number[];
+        fieldSizes: number[];
         contributions: OddsRow["contributions"];
       }
     >();
@@ -571,12 +578,15 @@ export default function App() {
             name: row.profile.displayName || row.profile.uid,
             avatarUrl: row.profile.avatarUrl,
             placements: [],
+            fieldSizes: [],
             contributions: [],
           });
         }
         const player = map.get(key);
         if (player) {
+          const totalPlacements = entry.leaderboard?.length ?? 0;
           player.placements.push(row.position);
+          if (totalPlacements > 0) player.fieldSizes.push(totalPlacements);
           if (!player.avatarUrl && row.profile.avatarUrl) player.avatarUrl = row.profile.avatarUrl;
           if (!player.name && row.profile.displayName) player.name = row.profile.displayName;
           player.contributions.push({
@@ -595,7 +605,11 @@ export default function App() {
         appearances > 0
           ? player.placements.reduce((sum, pos) => sum + pos, 0) / appearances
           : 0;
-      const odds = computeOdds(avgPlacement, appearances);
+      const avgFieldSize =
+        player.fieldSizes.length > 0
+          ? player.fieldSizes.reduce((sum, size) => sum + size, 0) / player.fieldSizes.length
+          : 0;
+      const odds = computeOdds(avgPlacement, avgFieldSize, appearances);
       const { tier, tierTone } = getTier(appearances, avgPlacement);
       rows.push({
         uid: player.uid,
@@ -1148,8 +1162,9 @@ export default function App() {
         <section className="card odds-card">
           <div className="section-title">Player Odds Board</div>
           <div className="subtle">
-            Sportsbook-style odds based on average placement across all masterpieces from #1 through #
-            {oddsHistory?.endId ?? mpId}. Players with fewer than 3 placements are listed at even odds.
+            Sportsbook-style odds based on placement performance normalized by field size across all masterpieces from
+            #1 through #{oddsHistory?.endId ?? mpId}. Higher placements shorten odds, lower placements lengthen odds, and
+            players with fewer than 3 placements are listed at even odds.
           </div>
           <div className="odds-controls">
             <div className="odds-meta">
