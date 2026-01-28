@@ -47,6 +47,17 @@ type Bet = {
   futureBet?: boolean;
 };
 
+type OddsRow = {
+  uid: string;
+  name: string;
+  avatarUrl?: string | null;
+  appearances: number;
+  avgPlacement: number;
+  odds: number;
+  tier: string;
+  tierTone: "elite" | "mid" | "low" | "new";
+};
+
 const COIN_SYMBOL = "$COIN";
 const COIN_CONTRACT = "0x7DC167E270D5EF683CEAF4AFCDF2EFBDD667A9A7";
 const ERC20_BALANCE_OF = "0x70a08231";
@@ -75,6 +86,10 @@ function formatTokenAmount(raw: bigint, decimals: number) {
   const fraction = raw % base;
   const fractionStr = fraction.toString().padStart(decimals, "0").slice(0, 4);
   return `${whole.toLocaleString()}.${fractionStr}`;
+}
+
+function formatOdds(odds: number) {
+  return `${odds.toFixed(2)}x`;
 }
 
 function padAddress(address: string) {
@@ -146,6 +161,10 @@ export default function App() {
   const [coinPrice, setCoinPrice] = useState<number | null>(null);
   const [coinDecimals, setCoinDecimals] = useState<number>(18);
   const [coinBalance, setCoinBalance] = useState<bigint | null>(null);
+  const [oddsRows, setOddsRows] = useState<OddsRow[]>([]);
+  const [oddsLoading, setOddsLoading] = useState(false);
+  const [oddsError, setOddsError] = useState("");
+  const [historyDepth, setHistoryDepth] = useState(20);
   const [pendingBet, setPendingBet] = useState<{
     type: "live" | "future";
     pickedUid: string;
@@ -490,6 +509,120 @@ export default function App() {
     }
     return { chances };
   }, [bettingClosed, mp, selectedPos]);
+
+  function getTier(appearances: number, avgPlacement: number) {
+    if (appearances < 3) {
+      return { tier: "New Player", tierTone: "new" as const };
+    }
+    if (avgPlacement <= 1.5) {
+      return { tier: "Veteran Favorite", tierTone: "elite" as const };
+    }
+    if (avgPlacement <= 2.25) {
+      return { tier: "Mid-Level", tierTone: "mid" as const };
+    }
+    return { tier: "Low-Level", tierTone: "low" as const };
+  }
+
+  function computeOdds(avgPlacement: number, appearances: number) {
+    if (appearances < 3) return 2;
+    const baseChance = Math.min(0.65, Math.max(0.18, 0.65 - (avgPlacement - 1) * 0.2));
+    const stability = Math.min(1, appearances / 8);
+    const adjustedChance = Math.max(0.12, baseChance * (0.6 + 0.4 * stability));
+    return 1 / adjustedChance;
+  }
+
+  function buildOddsRows(history: Masterpiece[]) {
+    const map = new Map<
+      string,
+      { uid: string; name: string; avatarUrl?: string | null; placements: number[] }
+    >();
+    for (const entry of history) {
+      for (const row of entry.leaderboard || []) {
+        if (row.position > 3) continue;
+        const key = row.profile.uid;
+        if (!map.has(key)) {
+          map.set(key, {
+            uid: row.profile.uid,
+            name: row.profile.displayName || row.profile.uid,
+            avatarUrl: row.profile.avatarUrl,
+            placements: [],
+          });
+        }
+        const player = map.get(key);
+        if (player) {
+          player.placements.push(row.position);
+          if (!player.avatarUrl && row.profile.avatarUrl) player.avatarUrl = row.profile.avatarUrl;
+          if (!player.name && row.profile.displayName) player.name = row.profile.displayName;
+        }
+      }
+    }
+
+    const rows: OddsRow[] = [];
+    for (const player of map.values()) {
+      const appearances = player.placements.length;
+      const avgPlacement =
+        appearances > 0
+          ? player.placements.reduce((sum, pos) => sum + pos, 0) / appearances
+          : 0;
+      const odds = computeOdds(avgPlacement, appearances);
+      const { tier, tierTone } = getTier(appearances, avgPlacement);
+      rows.push({
+        uid: player.uid,
+        name: player.name,
+        avatarUrl: player.avatarUrl,
+        appearances,
+        avgPlacement,
+        odds,
+        tier,
+        tierTone,
+      });
+    }
+
+    const tierRank: Record<OddsRow["tierTone"], number> = {
+      elite: 0,
+      mid: 1,
+      low: 2,
+      new: 3,
+    };
+
+    rows.sort((a, b) => {
+      if (tierRank[a.tierTone] !== tierRank[b.tierTone]) {
+        return tierRank[a.tierTone] - tierRank[b.tierTone];
+      }
+      return a.odds - b.odds;
+    });
+
+    return rows;
+  }
+
+  async function loadOddsHistory() {
+    setOddsLoading(true);
+    setOddsError("");
+    try {
+      const depth = Math.max(1, Math.floor(historyDepth));
+      const startId = Math.max(1, mpId - depth + 1);
+      const history: Masterpiece[] = [];
+
+      for (let id = startId; id <= mpId; id += 1) {
+        try {
+          const m = await fetchMasterpiece(id);
+          if (m) history.push(m);
+        } catch (e) {
+          console.error("Failed to load masterpiece", id, e);
+        }
+      }
+
+      const rows = buildOddsRows(history);
+      if (rows.length === 0) {
+        setOddsError("No placement data available for the selected masterpiece range.");
+      }
+      setOddsRows(rows);
+    } catch (e: any) {
+      setOddsError(e?.message || String(e));
+    } finally {
+      setOddsLoading(false);
+    }
+  }
 
   async function connectWallet() {
     setToast("");
@@ -941,6 +1074,78 @@ export default function App() {
           <div className="subtle">
             {dynamiteResource ? "Dynamite donated / target amount." : "Betting closes when dynamite is full."}
           </div>
+        </div>
+      </section>
+
+      <section className="card odds-card">
+        <div className="section-title">Player Odds Board</div>
+        <div className="subtle">
+          Sportsbook-style odds based on top-3 placements from the last {historyDepth} masterpieces. Players with fewer
+          than 3 placements are listed at even odds.
+        </div>
+        <div className="odds-controls">
+          <div>
+            <label>Masterpieces analyzed</label>
+            <input
+              type="number"
+              min={1}
+              value={historyDepth}
+              onChange={(e) => setHistoryDepth(Number(e.target.value))}
+            />
+          </div>
+          <div className="odds-actions">
+            <button className="btn" onClick={loadOddsHistory} disabled={oddsLoading}>
+              {oddsLoading ? "Loading odds..." : "Generate Odds"}
+            </button>
+          </div>
+        </div>
+
+        {oddsError && (
+          <div className="toast toast-error">
+            <b>Error:</b> {oddsError}
+          </div>
+        )}
+
+        <div className="table odds-table">
+          <div className="table-header">
+            <div>Player</div>
+            <div className="numeric">Placements</div>
+            <div className="numeric">Avg Place</div>
+            <div className="numeric">Odds</div>
+            <div className="cell-center">Tier</div>
+          </div>
+          {oddsRows.length === 0 && !oddsLoading && (
+            <div className="empty">Generate odds to see veteran, mid-level, low-level, and new players.</div>
+          )}
+          {oddsRows.map((row) => (
+            <div className="table-row static" key={row.uid}>
+              <div className="player">
+                {row.avatarUrl ? (
+                  <img
+                    src={row.avatarUrl}
+                    alt=""
+                    className="avatar"
+                    onError={(e) => ((e.currentTarget.style.display = "none"))}
+                  />
+                ) : (
+                  <div className="avatar placeholder" />
+                )}
+                <div>
+                  <div className="name">{row.name}</div>
+                  <div className="subtle">{row.uid}</div>
+                </div>
+              </div>
+              <div className="numeric">{row.appearances}</div>
+              <div className="numeric">{row.avgPlacement ? row.avgPlacement.toFixed(2) : "—"}</div>
+              <div className="numeric">
+                {formatOdds(row.odds)}
+                {row.appearances < 3 && <div className="subtle">Even odds</div>}
+              </div>
+              <div className="cell-center">
+                <span className={`tier-pill tier-${row.tierTone}`}>{row.tier}</span>
+              </div>
+            </div>
+          ))}
         </div>
       </section>
 
