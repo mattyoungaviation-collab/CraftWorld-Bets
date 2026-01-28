@@ -72,21 +72,6 @@
   flex-wrap: wrap;
 }
 
-.ledger-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.ledger-actions input {
-  width: 160px;
-}
-
-.ledger-actions input[type="text"] {
-  width: 240px;
-}
-
 .price-pill {
   background: #0f172a;
   color: #f8fafc;
@@ -612,32 +597,6 @@ select {
   display: grid;
   gap: 6px;
   color: #475569;
-}
-
-.ledger-log ul {
-  margin: 8px 0 0;
-  padding-left: 0;
-  list-style: none;
-  display: grid;
-  gap: 6px;
-  color: #475569;
-}
-
-.ledger-log li {
-  display: grid;
-  grid-template-columns: 90px 1fr auto;
-  gap: 12px;
-  font-size: 13px;
-}
-
-.ledger-positive {
-  color: #16a34a;
-  font-weight: 600;
-}
-
-.ledger-negative {
-  color: #dc2626;
-  font-weight: 600;
 }
 
 .history-summary {
