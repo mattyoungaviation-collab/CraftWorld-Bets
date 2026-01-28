@@ -985,10 +985,10 @@ export default function App() {
         <div className="section-title">Leaderboard (click to bet)</div>
         <div className="table">
           <div className="table-header">
-            <div>Pos</div>
+            <div className="cell-center">Pos</div>
             <div>Player</div>
-            <div>Points</div>
-            <div>Odds</div>
+            <div className="cell-right">Points</div>
+            <div className="cell-right">Odds</div>
             <div></div>
           </div>
 
@@ -1003,7 +1003,7 @@ export default function App() {
                 disabled={placing || bettingClosed}
                 className="table-row"
               >
-                <div className="pos">#{row.position}</div>
+                <div className="pos cell-center">#{row.position}</div>
 
                 <div className="player">
                   {avatar ? (
@@ -1043,8 +1043,8 @@ export default function App() {
             <div>Time</div>
             <div>User</div>
             <div>Pick</div>
-            <div>Pos</div>
-            <div>Wager</div>
+            <div className="cell-center">Pos</div>
+            <div className="cell-right">Wager</div>
           </div>
           {bets.length === 0 && <div className="empty">No bets yet.</div>}
           {bets.map((bet) => {
@@ -1056,7 +1056,7 @@ export default function App() {
                 <div className="subtle">{new Date(bet.createdAt).toLocaleString()}</div>
                 <div>{bet.user}</div>
                 <div>{bet.pickedName || bet.pickedUid || "—"}</div>
-                <div>#{bet.position}</div>
+                <div className="cell-center">#{bet.position}</div>
                 <div className="numeric">
                   {fmt(wager)} {COIN_SYMBOL}
                   <div className="subtle">
@@ -1102,13 +1102,13 @@ export default function App() {
           <div className="table positions-table" style={{ marginTop: 12 }}>
             <div className="table-header">
               <div>Time</div>
-              <div>Masterpiece</div>
+              <div className="cell-center">Masterpiece</div>
               <div>Pick</div>
-              <div>Pos</div>
-              <div>Bet Cost</div>
-              <div>Size</div>
-              <div>Fees</div>
-              <div>Live Value</div>
+              <div className="cell-center">Pos</div>
+              <div className="cell-right">Bet Cost</div>
+              <div className="cell-right">Size</div>
+              <div className="cell-right">Fees</div>
+              <div className="cell-right">Live Value</div>
             </div>
             {walletBets.length === 0 && <div className="empty">No bets found for this wallet.</div>}
             {walletBets.map((bet) => {
@@ -1141,9 +1141,9 @@ export default function App() {
               return (
                 <div className="table-row static" key={bet.id}>
                   <div className="subtle">{new Date(bet.createdAt).toLocaleString()}</div>
-                  <div>#{bet.masterpieceId}</div>
+                  <div className="cell-center">#{bet.masterpieceId}</div>
                   <div>{bet.pickedName || bet.pickedUid || "—"}</div>
-                  <div>#{bet.position}</div>
+                  <div className="cell-center">#{bet.position}</div>
                   <div className="numeric">
                     {fmt(total)} {COIN_SYMBOL}
                     <div className="subtle">{formatUsd((coinPrice || 0) * total)}</div>
@@ -1178,18 +1178,18 @@ export default function App() {
         {hasLiveBoard && (
           <div className="table" style={{ marginTop: 12 }}>
             <div className="table-header">
-              <div>Pos</div>
+              <div className="cell-center">Pos</div>
               <div>Leader</div>
               <div>Recipient</div>
-              <div>Size</div>
-              <div>Payout</div>
+              <div className="cell-right">Size</div>
+              <div className="cell-right">Payout</div>
             </div>
             {liveWinners.length === 0 && (
               <div className="empty">No winners yet for the current live leaderboard.</div>
             )}
             {liveWinners.map((winner) => (
               <div className="table-row static" key={winner.id}>
-                <div>#{winner.position}</div>
+                <div className="cell-center">#{winner.position}</div>
                 <div>{winner.leader}</div>
                 <div>{winner.recipient}</div>
                 <div className="numeric">
