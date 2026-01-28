@@ -420,6 +420,51 @@ export default function App() {
     return { potByPosition, stakeByPick };
   }, [allBets, bets]);
 
+  const liveWinners = useMemo(() => {
+    if (!hasLiveBoard) return [];
+    const source = allBets.length > 0 ? allBets : bets;
+    const winners: Array<{
+      id: string;
+      position: number;
+      leader: string;
+      recipient: string;
+      wager: number;
+      payout: number;
+    }> = [];
+
+    for (const bet of source) {
+      if (bet.masterpieceId !== mpId) continue;
+      const liveLeader = liveLeaderByPosition.get(bet.position);
+      if (!liveLeader) continue;
+      const matchesLeader =
+        (bet.pickedUid && bet.pickedUid === liveLeader.uid) ||
+        (bet.pickedName &&
+          liveLeader.name &&
+          bet.pickedName.trim().toLowerCase() === liveLeader.name.trim().toLowerCase());
+      if (!matchesLeader) continue;
+
+      const wager = bet.wagerAmount ?? bet.amount;
+      const posKey = `${bet.masterpieceId}-${bet.position}`;
+      const pickKey = bet.pickedUid || bet.pickedName;
+      const pot = positionSnapshot.potByPosition.get(posKey) || 0;
+      const stake = pickKey ? positionSnapshot.stakeByPick.get(`${posKey}-${pickKey}`) || 0 : 0;
+      if (pot <= 0 || stake <= 0) continue;
+      const payout = Math.min((wager / stake) * pot, pot);
+      const recipient = bet.walletAddress || bet.user;
+      winners.push({
+        id: bet.id,
+        position: bet.position,
+        leader: liveLeader.name || liveLeader.uid,
+        recipient,
+        wager,
+        payout,
+      });
+    }
+
+    winners.sort((a, b) => a.position - b.position || b.payout - a.payout);
+    return winners;
+  }, [allBets, bets, hasLiveBoard, liveLeaderByPosition, mpId, positionSnapshot]);
+
   const oddsByUid = useMemo(() => {
     const filtered = bets.filter((b) => b.masterpieceId === mpId && b.position === selectedPos);
     const pot = filtered.reduce((sum, b) => sum + (b.wagerAmount ?? b.amount), 0);
@@ -1119,6 +1164,43 @@ export default function App() {
                 </div>
               );
             })}
+          </div>
+        )}
+      </section>
+
+      <section className="card">
+        <div className="section-title">Live Winners (paid out now)</div>
+        <div className="subtle">
+          Winners are calculated from the current leaderboard for masterpiece #{mpId}. Each payout is proportional
+          to position size within that pick's pool.
+        </div>
+        {!hasLiveBoard && <div className="empty">No live leaderboard data available yet.</div>}
+        {hasLiveBoard && (
+          <div className="table" style={{ marginTop: 12 }}>
+            <div className="table-header">
+              <div>Pos</div>
+              <div>Leader</div>
+              <div>Recipient</div>
+              <div>Size</div>
+              <div>Payout</div>
+            </div>
+            {liveWinners.length === 0 && (
+              <div className="empty">No winners yet for the current live leaderboard.</div>
+            )}
+            {liveWinners.map((winner) => (
+              <div className="table-row static" key={winner.id}>
+                <div>#{winner.position}</div>
+                <div>{winner.leader}</div>
+                <div>{winner.recipient}</div>
+                <div className="numeric">
+                  {fmt(winner.wager)} {COIN_SYMBOL}
+                </div>
+                <div className="numeric">
+                  {fmt(winner.payout)} {COIN_SYMBOL}
+                  <div className="subtle">{formatUsd((coinPrice || 0) * winner.payout)}</div>
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </section>
