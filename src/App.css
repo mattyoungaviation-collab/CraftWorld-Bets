@@ -347,7 +347,7 @@ select {
 
 .history-summary {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 16px;
 }
 
@@ -389,7 +389,7 @@ select {
 
 .odds-table .table-header,
 .odds-table .table-row {
-  grid-template-columns: 1.6fr 120px 120px 120px 140px;
+  grid-template-columns: 1.6fr 100px 120px 110px 110px 140px;
 }
 
 .tier-pill {
@@ -520,7 +520,7 @@ select {
 
   .odds-table .table-header,
   .odds-table .table-row {
-    grid-template-columns: 1.4fr 100px 100px 100px 120px;
+    grid-template-columns: 1.4fr 80px 100px 90px 90px 120px;
   }
 
   .history-header,
@@ -567,8 +567,10 @@ select {
 
   .odds-table .table-header div:nth-child(4),
   .odds-table .table-header div:nth-child(5),
+  .odds-table .table-header div:nth-child(6),
   .odds-table .table-row div:nth-child(4),
-  .odds-table .table-row div:nth-child(5) {
+  .odds-table .table-row div:nth-child(5),
+  .odds-table .table-row div:nth-child(6) {
     display: none;
   }
 

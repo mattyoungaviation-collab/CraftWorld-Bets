@@ -53,6 +53,8 @@ type OddsRow = {
   avatarUrl?: string | null;
   appearances: number;
   avgPlacement: number;
+  winProbability?: number;
+  winChance: number;
   odds: number;
   tier: string;
   tierTone: "elite" | "mid" | "low" | "new";
@@ -68,6 +70,11 @@ type OddsHistory = {
   endId: number;
   updatedAt: string;
   masterpieces: Masterpiece[];
+};
+
+type ModelOddsResponse = {
+  probs: Record<string, number>;
+  odds: Record<string, number>;
 };
 
 const COIN_SYMBOL = "$COIN";
@@ -101,7 +108,13 @@ function formatTokenAmount(raw: bigint, decimals: number) {
 }
 
 function formatOdds(odds: number) {
+  if (!Number.isFinite(odds) || odds <= 0) return "—";
   return `${odds.toFixed(2)}x`;
+}
+
+function formatPercent(value: number) {
+  if (!Number.isFinite(value)) return "—";
+  return `${value.toFixed(1)}%`;
 }
 
 function padAddress(address: string) {
@@ -178,6 +191,7 @@ export default function App() {
   const [oddsLoading, setOddsLoading] = useState(false);
   const [oddsError, setOddsError] = useState("");
   const [oddsHistory, setOddsHistory] = useState<OddsHistory | null>(null);
+  const [modelOdds, setModelOdds] = useState<ModelOddsResponse | null>(null);
   const [oddsSearch, setOddsSearch] = useState("");
   const [selectedOddsPlayer, setSelectedOddsPlayer] = useState<OddsRow | null>(null);
   const [pendingBet, setPendingBet] = useState<{
@@ -531,34 +545,24 @@ export default function App() {
     return { chances };
   }, [bettingClosed, mp, selectedPos]);
 
-  function getTier(appearances: number, avgPlacement: number) {
+  function getTier(appearances: number, winChance: number) {
     if (appearances < 3) {
       return { tier: "New Player", tierTone: "new" as const };
     }
-    if (avgPlacement <= 1.5) {
+    if (winChance >= 18) {
       return { tier: "Veteran Favorite", tierTone: "elite" as const };
     }
-    if (avgPlacement <= 2.25) {
+    if (winChance >= 10) {
       return { tier: "Mid-Level", tierTone: "mid" as const };
     }
     return { tier: "Low-Level", tierTone: "low" as const };
   }
 
-  function computeOdds(avgPlacement: number, avgFieldSize: number, appearances: number) {
-    if (appearances < 3) return 2;
-    const normalizedPlacement = avgFieldSize > 1 ? (avgFieldSize - avgPlacement) / (avgFieldSize - 1) : 0.5;
-    const sampleWeight = Math.min(1, appearances / 12);
-    const blendedScore = 0.5 * (1 - sampleWeight) + normalizedPlacement * sampleWeight;
-    const curvedScore = Math.pow(Math.min(1, Math.max(0, blendedScore)), 1.3);
-    const minProbability = 0.04;
-    const maxProbability = 0.55;
-    const baseProbability = minProbability + (maxProbability - minProbability) * curvedScore;
-    const vig = 0.07;
-    const marketProbability = Math.min(0.9, baseProbability * (1 + vig));
-    return 1 / marketProbability;
-  }
-
-  function buildOddsRows(history: Masterpiece[]) {
+  function buildOddsRows(history: Masterpiece[], model: ModelOddsResponse | null) {
+    const sortedHistory = history
+      .slice()
+      .sort((a, b) => Number(a.id) - Number(b.id))
+      .filter((entry) => entry?.leaderboard?.length);
     const map = new Map<
       string,
       {
@@ -566,11 +570,10 @@ export default function App() {
         name: string;
         avatarUrl?: string | null;
         placements: number[];
-        fieldSizes: number[];
         contributions: OddsRow["contributions"];
       }
     >();
-    for (const entry of history) {
+    for (const entry of sortedHistory) {
       for (const row of entry.leaderboard || []) {
         const key = row.profile.uid;
         if (!map.has(key)) {
@@ -579,15 +582,12 @@ export default function App() {
             name: row.profile.displayName || row.profile.uid,
             avatarUrl: row.profile.avatarUrl,
             placements: [],
-            fieldSizes: [],
             contributions: [],
           });
         }
         const player = map.get(key);
         if (player) {
-          const totalPlacements = entry.leaderboard?.length ?? 0;
           player.placements.push(row.position);
-          if (totalPlacements > 0) player.fieldSizes.push(totalPlacements);
           if (!player.avatarUrl && row.profile.avatarUrl) player.avatarUrl = row.profile.avatarUrl;
           if (!player.name && row.profile.displayName) player.name = row.profile.displayName;
           player.contributions.push({
@@ -600,24 +600,28 @@ export default function App() {
     }
 
     const rows: OddsRow[] = [];
+    const players = Array.from(map.values());
+    if (players.length === 0) return rows;
+    const modelProbs = model?.probs ?? {};
+    const modelOddsMap = model?.odds ?? {};
     for (const player of map.values()) {
       const appearances = player.placements.length;
       const avgPlacement =
         appearances > 0
           ? player.placements.reduce((sum, pos) => sum + pos, 0) / appearances
           : 0;
-      const avgFieldSize =
-        player.fieldSizes.length > 0
-          ? player.fieldSizes.reduce((sum, size) => sum + size, 0) / player.fieldSizes.length
-          : 0;
-      const odds = computeOdds(avgPlacement, avgFieldSize, appearances);
-      const { tier, tierTone } = getTier(appearances, avgPlacement);
+      const probability = modelProbs[player.uid];
+      const winChance = Number.isFinite(probability) ? probability * 100 : Number.NaN;
+      const odds = modelOddsMap[player.uid] ?? Number.NaN;
+      const { tier, tierTone } = getTier(appearances, Number.isFinite(winChance) ? winChance : 0);
       rows.push({
         uid: player.uid,
         name: player.name,
         avatarUrl: player.avatarUrl,
         appearances,
         avgPlacement,
+        winProbability: Number.isFinite(probability) ? probability : undefined,
+        winChance,
         odds,
         tier,
         tierTone,
@@ -625,7 +629,11 @@ export default function App() {
       });
     }
 
-    rows.sort((a, b) => a.odds - b.odds);
+    rows.sort((a, b) => {
+      const aVal = Number.isFinite(a.odds) ? a.odds : Number.POSITIVE_INFINITY;
+      const bVal = Number.isFinite(b.odds) ? b.odds : Number.POSITIVE_INFINITY;
+      return aVal - bVal;
+    });
 
     return rows;
   }
@@ -643,19 +651,28 @@ export default function App() {
     setOddsError("");
     try {
       const endId = mp?.id ? Number(mp.id) : mpId;
-      const r = await fetch(`/api/odds/history?endId=${endId}`);
-      const j = await r.json();
-      if (!r.ok) throw new Error(j?.error || "Unable to load odds history");
-      const history = j?.data as OddsHistory | undefined;
+      const [historyRes, modelRes] = await Promise.all([
+        fetch(`/api/odds/history?endId=${endId}`),
+        fetch("/api/odds/model"),
+      ]);
+      const historyJson = await historyRes.json();
+      const modelJson = await modelRes.json();
+      if (!historyRes.ok) throw new Error(historyJson?.error || "Unable to load odds history");
+      const history = historyJson?.data as OddsHistory | undefined;
+      const model =
+        modelRes.ok && modelJson?.probs && modelJson?.odds
+          ? { probs: modelJson.probs as Record<string, number>, odds: modelJson.odds as Record<string, number> }
+          : null;
       if (!history || !Array.isArray(history.masterpieces)) {
         throw new Error("No odds history data returned");
       }
-      const rows = buildOddsRows(history.masterpieces);
+      const rows = buildOddsRows(history.masterpieces, model);
       if (rows.length === 0) {
         setOddsError("No placement data available for the selected masterpiece range.");
       }
       setOddsRows(rows);
       setOddsHistory(history);
+      setModelOdds(model);
     } catch (e: any) {
       setOddsError(e?.message || String(e));
     } finally {
@@ -668,19 +685,28 @@ export default function App() {
     setOddsError("");
     try {
       const endId = mp?.id ? Number(mp.id) : mpId;
-      const r = await fetch(`/api/odds/history?endId=${endId}&refresh=true`);
-      const j = await r.json();
-      if (!r.ok) throw new Error(j?.error || "Unable to refresh odds history");
-      const history = j?.data as OddsHistory | undefined;
+      const [historyRes, modelRes] = await Promise.all([
+        fetch(`/api/odds/history?endId=${endId}&refresh=true`),
+        fetch("/api/odds/model"),
+      ]);
+      const historyJson = await historyRes.json();
+      const modelJson = await modelRes.json();
+      if (!historyRes.ok) throw new Error(historyJson?.error || "Unable to refresh odds history");
+      const history = historyJson?.data as OddsHistory | undefined;
+      const model =
+        modelRes.ok && modelJson?.probs && modelJson?.odds
+          ? { probs: modelJson.probs as Record<string, number>, odds: modelJson.odds as Record<string, number> }
+          : null;
       if (!history || !Array.isArray(history.masterpieces)) {
         throw new Error("No odds history data returned");
       }
-      const rows = buildOddsRows(history.masterpieces);
+      const rows = buildOddsRows(history.masterpieces, model);
       if (rows.length === 0) {
         setOddsError("No placement data available for the selected masterpiece range.");
       }
       setOddsRows(rows);
       setOddsHistory(history);
+      setModelOdds(model);
     } catch (e: any) {
       setOddsError(e?.message || String(e));
     } finally {
@@ -1159,9 +1185,9 @@ export default function App() {
         <section className="card odds-card">
           <div className="section-title">Player Odds Board</div>
           <div className="subtle">
-            Sportsbook-style odds based on placement performance normalized by field size across all masterpieces from
-            #1 through #{oddsHistory?.endId ?? mpId}. Higher placements shorten odds, lower placements lengthen odds, and
-            players with fewer than 3 placements are listed at even odds.
+            Model odds built from recency-weighted masterpiece placements across the full history range (#1 through #
+            {oddsHistory?.endId ?? mpId}). The model blends in a baseline prior for low-sample players and uses a softmax
+            curve so win chances stay stable as more history arrives.
           </div>
           <div className="odds-controls">
             <div className="odds-meta">
@@ -1173,6 +1199,9 @@ export default function App() {
                 {oddsHistory
                   ? `Cached ${new Date(oddsHistory.updatedAt).toLocaleString()}`
                   : "Load the full history to build odds."}
+              </div>
+              <div className="subtle">
+                {modelOdds ? "Model odds loaded from history.json." : "Model odds not loaded yet."}
               </div>
             </div>
             <div className="odds-search">
@@ -1204,9 +1233,10 @@ export default function App() {
           <div className="table odds-table">
             <div className="table-header">
               <div>Player</div>
+              <div className="numeric">Win %</div>
+              <div className="numeric">Odds</div>
               <div className="numeric">Placements</div>
               <div className="numeric">Avg Place</div>
-              <div className="numeric">Odds</div>
               <div className="cell-center">Tier</div>
             </div>
             {filteredOddsRows.length === 0 && !oddsLoading && (
@@ -1239,12 +1269,12 @@ export default function App() {
                     <div className="subtle">{row.uid}</div>
                   </div>
                 </div>
-                <div className="numeric">{row.appearances}</div>
-                <div className="numeric">{row.avgPlacement ? row.avgPlacement.toFixed(2) : "—"}</div>
+                <div className="numeric">{formatPercent(row.winChance)}</div>
                 <div className="numeric">
                   {formatOdds(row.odds)}
-                  {row.appearances < 3 && <div className="subtle">Even odds</div>}
                 </div>
+                <div className="numeric">{row.appearances}</div>
+                <div className="numeric">{row.avgPlacement ? row.avgPlacement.toFixed(2) : "—"}</div>
                 <div className="cell-center">
                   <span className={`tier-pill tier-${row.tierTone}`}>{row.tier}</span>
                 </div>
@@ -1528,6 +1558,10 @@ export default function App() {
                 <div>
                   <div className="label">Odds</div>
                   <div className="title">{formatOdds(selectedOddsPlayer.odds)}</div>
+                </div>
+                <div>
+                  <div className="label">Model Win Chance</div>
+                  <div className="title">{formatPercent(selectedOddsPlayer.winChance)}</div>
                 </div>
               </div>
 
