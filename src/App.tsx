@@ -112,8 +112,8 @@ function formatOdds(odds: number) {
   return `${odds.toFixed(2)}x`;
 }
 
-function formatPercent(value: number) {
-  if (!Number.isFinite(value)) return "—";
+function formatPercent(value?: number | null) {
+  if (value == null || !Number.isFinite(value)) return "—";
   return `${value.toFixed(1)}%`;
 }
 
@@ -545,17 +545,38 @@ export default function App() {
     return { chances };
   }, [bettingClosed, mp, selectedPos]);
 
-  function getTier(appearances: number, winChance: number) {
-    if (appearances < 3) {
-      return { tier: "New Player", tierTone: "new" as const };
+  function getTier(participationPercent: number) {
+    if (participationPercent >= 100) {
+      return { tier: "God Level", tierTone: "elite" as const };
     }
-    if (winChance >= 18) {
-      return { tier: "Veteran Favorite", tierTone: "elite" as const };
+    if (participationPercent >= 90) {
+      return { tier: "Ascended", tierTone: "elite" as const };
     }
-    if (winChance >= 10) {
-      return { tier: "Mid-Level", tierTone: "mid" as const };
+    if (participationPercent >= 80) {
+      return { tier: "Pro", tierTone: "elite" as const };
     }
-    return { tier: "Low-Level", tierTone: "low" as const };
+    if (participationPercent >= 70) {
+      return { tier: "Veteran", tierTone: "mid" as const };
+    }
+    if (participationPercent >= 60) {
+      return { tier: "Hardened", tierTone: "mid" as const };
+    }
+    if (participationPercent >= 50) {
+      return { tier: "Mid", tierTone: "mid" as const };
+    }
+    if (participationPercent >= 40) {
+      return { tier: "Average", tierTone: "low" as const };
+    }
+    if (participationPercent >= 30) {
+      return { tier: "Low", tierTone: "low" as const };
+    }
+    if (participationPercent >= 20) {
+      return { tier: "Newbie", tierTone: "new" as const };
+    }
+    if (participationPercent >= 10) {
+      return { tier: "Just Starting Out", tierTone: "new" as const };
+    }
+    return { tier: "Dirt Level", tierTone: "new" as const };
   }
 
   function buildOddsRows(history: Masterpiece[], model: ModelOddsResponse | null) {
@@ -574,7 +595,9 @@ export default function App() {
         strength: number;
       }
     >();
-    for (const entry of sortedHistory) {
+    const totalEntries = sortedHistory.length;
+    for (const [index, entry] of sortedHistory.entries()) {
+      const weight = totalEntries > 1 ? 0.5 + index / (totalEntries - 1) : 1;
       for (const row of entry.leaderboard || []) {
         const key = row.profile.uid;
         if (!map.has(key)) {
@@ -662,7 +685,8 @@ export default function App() {
       const probability = modelProbs[player.uid];
       const winChance = Number.isFinite(probability) ? probability * 100 : Number.NaN;
       const odds = modelOddsMap[player.uid] ?? Number.NaN;
-      const { tier, tierTone } = getTier(appearances, Number.isFinite(winChance) ? winChance : 0);
+      const participationPercent = totalEntries > 0 ? (appearances / totalEntries) * 100 : 0;
+      const { tier, tierTone } = getTier(participationPercent);
       rows.push({
         uid: player.uid,
         name: player.name,
