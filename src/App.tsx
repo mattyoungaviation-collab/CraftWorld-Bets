@@ -377,6 +377,16 @@ export default function App() {
 
   const top100 = useMemo(() => (mp?.leaderboard || []).slice(0, 100), [mp]);
   const hasLiveBoard = top100.length > 0;
+  const liveLeaderByPosition = useMemo(() => {
+    const map = new Map<number, { uid: string; name: string | null }>();
+    for (const row of top100) {
+      map.set(row.position, {
+        uid: row.profile.uid,
+        name: row.profile.displayName ?? null,
+      });
+    }
+    return map;
+  }, [top100]);
   const dynamiteResource = useMemo(
     () => mp?.resources?.find((resource) => resource.symbol === "DYNAMITE") || null,
     [mp]
@@ -1067,8 +1077,22 @@ export default function App() {
                 pickKey && positionSnapshot.stakeByPick.get(`${posKey}-${pickKey}`)
                   ? positionSnapshot.stakeByPick.get(`${posKey}-${pickKey}`) || 0
                   : 0;
+              const liveLeader =
+                bet.masterpieceId === mpId ? liveLeaderByPosition.get(bet.position) : null;
+              const matchesLeader =
+                !!liveLeader &&
+                ((bet.pickedUid && bet.pickedUid === liveLeader.uid) ||
+                  (bet.pickedName &&
+                    liveLeader.name &&
+                    bet.pickedName.trim().toLowerCase() === liveLeader.name.trim().toLowerCase()));
               const liveValue =
-                pot > 0 && stake > 0 ? Math.min((wager / stake) * pot, pot) : null;
+                pot > 0 && stake > 0
+                  ? hasLiveBoard && bet.masterpieceId === mpId
+                    ? matchesLeader
+                      ? Math.min((wager / stake) * pot, pot)
+                      : 0
+                    : null
+                  : null;
               return (
                 <div className="table-row static" key={bet.id}>
                   <div className="subtle">{new Date(bet.createdAt).toLocaleString()}</div>
