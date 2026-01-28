@@ -53,6 +53,7 @@ type OddsRow = {
   avatarUrl?: string | null;
   appearances: number;
   avgPlacement: number;
+  winProbability: number;
   odds: number;
   tier: string;
   tierTone: "elite" | "mid" | "low" | "new";
@@ -102,6 +103,10 @@ function formatTokenAmount(raw: bigint, decimals: number) {
 
 function formatOdds(odds: number) {
   return `${odds.toFixed(2)}x`;
+}
+
+function formatPercent(value: number) {
+  return `${(value * 100).toFixed(1)}%`;
 }
 
 function padAddress(address: string) {
@@ -544,18 +549,9 @@ export default function App() {
     return { tier: "Low-Level", tierTone: "low" as const };
   }
 
-  function computeOdds(avgPlacement: number, avgFieldSize: number, appearances: number) {
-    if (appearances < 3) return 2;
-    const normalizedPlacement = avgFieldSize > 1 ? (avgFieldSize - avgPlacement) / (avgFieldSize - 1) : 0.5;
-    const sampleWeight = Math.min(1, appearances / 12);
-    const blendedScore = 0.5 * (1 - sampleWeight) + normalizedPlacement * sampleWeight;
-    const curvedScore = Math.pow(Math.min(1, Math.max(0, blendedScore)), 1.3);
-    const minProbability = 0.04;
-    const maxProbability = 0.55;
-    const baseProbability = minProbability + (maxProbability - minProbability) * curvedScore;
-    const vig = 0.07;
-    const marketProbability = Math.min(0.9, baseProbability * (1 + vig));
-    return 1 / marketProbability;
+  function computeOddsFromProbability(winProbability: number) {
+    if (winProbability <= 0) return 0;
+    return 1 / winProbability;
   }
 
   function buildOddsRows(history: Masterpiece[]) {
@@ -566,11 +562,16 @@ export default function App() {
         name: string;
         avatarUrl?: string | null;
         placements: number[];
-        fieldSizes: number[];
         contributions: OddsRow["contributions"];
+        strength: number;
       }
     >();
-    for (const entry of history) {
+    const orderedHistory = history.slice().sort((a, b) => Number(a.id) - Number(b.id));
+    const totalEvents = orderedHistory.length;
+    const recencyLambda = 0.35;
+    for (const [index, entry] of orderedHistory.entries()) {
+      const ageInEvents = totalEvents - 1 - index;
+      const weight = Math.exp(-recencyLambda * ageInEvents);
       for (const row of entry.leaderboard || []) {
         const key = row.profile.uid;
         if (!map.has(key)) {
@@ -579,15 +580,13 @@ export default function App() {
             name: row.profile.displayName || row.profile.uid,
             avatarUrl: row.profile.avatarUrl,
             placements: [],
-            fieldSizes: [],
             contributions: [],
+            strength: 0,
           });
         }
         const player = map.get(key);
         if (player) {
-          const totalPlacements = entry.leaderboard?.length ?? 0;
           player.placements.push(row.position);
-          if (totalPlacements > 0) player.fieldSizes.push(totalPlacements);
           if (!player.avatarUrl && row.profile.avatarUrl) player.avatarUrl = row.profile.avatarUrl;
           if (!player.name && row.profile.displayName) player.name = row.profile.displayName;
           player.contributions.push({
@@ -595,8 +594,55 @@ export default function App() {
             masterpieceName: entry.name,
             position: row.position,
           });
+          const placementScore = row.position > 0 ? 1 / row.position : 0;
+          player.strength += weight * placementScore;
         }
       }
+    }
+
+    if (map.size === 0) {
+      return [];
+    }
+
+    const baselineStrength =
+      Array.from(map.values()).reduce((sum, player) => sum + player.strength, 0) / map.size;
+    const priorWeight = 3;
+    const uncertaintyPenalty = 4;
+    const temperature = 0.9;
+
+    const adjustedStrengths = new Map<string, number>();
+    const priorStrengths: number[] = [];
+
+    for (const player of map.values()) {
+      const priorAdjusted = player.strength + priorWeight * baselineStrength;
+      priorStrengths.push(priorAdjusted);
+      adjustedStrengths.set(player.uid, priorAdjusted);
+    }
+
+    const baselineAdjusted = priorStrengths.reduce((sum, value) => sum + value, 0) / priorStrengths.length;
+
+    const finalStrengths = new Map<string, number>();
+    let maxStrength = -Infinity;
+    for (const player of map.values()) {
+      const appearances = player.placements.length;
+      const alpha = appearances / (appearances + uncertaintyPenalty);
+      const priorAdjusted = adjustedStrengths.get(player.uid) ?? baselineAdjusted;
+      const finalStrength = alpha * priorAdjusted + (1 - alpha) * baselineAdjusted;
+      finalStrengths.set(player.uid, finalStrength);
+      if (finalStrength > maxStrength) maxStrength = finalStrength;
+    }
+
+    let denominator = 0;
+    const probabilities = new Map<string, number>();
+    for (const player of map.values()) {
+      const strength = finalStrengths.get(player.uid) ?? 0;
+      const scaled = Math.exp((strength - maxStrength) / temperature);
+      probabilities.set(player.uid, scaled);
+      denominator += scaled;
+    }
+
+    for (const [uid, scaled] of probabilities.entries()) {
+      probabilities.set(uid, denominator > 0 ? scaled / denominator : 0);
     }
 
     const rows: OddsRow[] = [];
@@ -606,11 +652,8 @@ export default function App() {
         appearances > 0
           ? player.placements.reduce((sum, pos) => sum + pos, 0) / appearances
           : 0;
-      const avgFieldSize =
-        player.fieldSizes.length > 0
-          ? player.fieldSizes.reduce((sum, size) => sum + size, 0) / player.fieldSizes.length
-          : 0;
-      const odds = computeOdds(avgPlacement, avgFieldSize, appearances);
+      const winProbability = probabilities.get(player.uid) ?? 0;
+      const odds = computeOddsFromProbability(winProbability);
       const { tier, tierTone } = getTier(appearances, avgPlacement);
       rows.push({
         uid: player.uid,
@@ -618,6 +661,7 @@ export default function App() {
         avatarUrl: player.avatarUrl,
         appearances,
         avgPlacement,
+        winProbability,
         odds,
         tier,
         tierTone,
@@ -1159,9 +1203,9 @@ export default function App() {
         <section className="card odds-card">
           <div className="section-title">Player Odds Board</div>
           <div className="subtle">
-            Sportsbook-style odds based on placement performance normalized by field size across all masterpieces from
-            #1 through #{oddsHistory?.endId ?? mpId}. Higher placements shorten odds, lower placements lengthen odds, and
-            players with fewer than 3 placements are listed at even odds.
+            Sportsbook-style odds based on recency-weighted placements across all masterpieces from #1 through
+            #{oddsHistory?.endId ?? mpId}. We smooth new players toward the field and convert strength scores into win
+            probabilities via softmax so the board stays stable as history grows.
           </div>
           <div className="odds-controls">
             <div className="odds-meta">
@@ -1206,6 +1250,7 @@ export default function App() {
               <div>Player</div>
               <div className="numeric">Placements</div>
               <div className="numeric">Avg Place</div>
+              <div className="numeric">Win %</div>
               <div className="numeric">Odds</div>
               <div className="cell-center">Tier</div>
             </div>
@@ -1241,9 +1286,10 @@ export default function App() {
                 </div>
                 <div className="numeric">{row.appearances}</div>
                 <div className="numeric">{row.avgPlacement ? row.avgPlacement.toFixed(2) : "—"}</div>
+                <div className="numeric">{formatPercent(row.winProbability)}</div>
                 <div className="numeric">
                   {formatOdds(row.odds)}
-                  {row.appearances < 3 && <div className="subtle">Even odds</div>}
+                  {row.appearances < 3 && <div className="subtle">Smoothed</div>}
                 </div>
                 <div className="cell-center">
                   <span className={`tier-pill tier-${row.tierTone}`}>{row.tier}</span>
@@ -1524,6 +1570,10 @@ export default function App() {
                 <div>
                   <div className="label">Appearances</div>
                   <div className="title">{selectedOddsPlayer.appearances}</div>
+                </div>
+                <div>
+                  <div className="label">Win Chance</div>
+                  <div className="title">{formatPercent(selectedOddsPlayer.winProbability)}</div>
                 </div>
                 <div>
                   <div className="label">Odds</div>
