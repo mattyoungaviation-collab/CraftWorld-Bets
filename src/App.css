@@ -213,6 +213,13 @@ select {
   background: #f8fafc;
 }
 
+.table-header div:nth-child(3),
+.table-header div:nth-child(4),
+.table-row div:nth-child(3),
+.table-row div:nth-child(4) {
+  text-align: right;
+}
+
 .player {
   display: flex;
   align-items: center;

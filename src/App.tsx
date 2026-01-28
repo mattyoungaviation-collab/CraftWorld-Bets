@@ -466,19 +466,19 @@ export default function App() {
   }, [allBets, bets, hasLiveBoard, liveLeaderByPosition, mpId, positionSnapshot]);
 
   const oddsByUid = useMemo(() => {
-    const filtered = bets.filter((b) => b.masterpieceId === mpId && b.position === selectedPos);
-    const pot = filtered.reduce((sum, b) => sum + (b.wagerAmount ?? b.amount), 0);
-    const stakeByUid = new Map<string, number>();
-    for (const b of filtered) {
-      if (!b.pickedUid) continue;
-      stakeByUid.set(b.pickedUid, (stakeByUid.get(b.pickedUid) || 0) + (b.wagerAmount ?? b.amount));
-    }
+    const leader = mp?.leaderboard?.find((row) => row.position === selectedPos);
+    const leaderPoints = leader?.masterpiecePoints ?? 0;
     const odds = new Map<string, number>();
-    for (const [uid, stake] of stakeByUid) {
-      if (stake > 0) odds.set(uid, pot / stake);
+    if (!leaderPoints || leaderPoints <= 0 || !mp?.leaderboard) {
+      return { odds };
     }
-    return { odds, pot };
-  }, [bets, mpId, selectedPos]);
+    for (const row of mp.leaderboard) {
+      if (row.masterpiecePoints <= 0) continue;
+      const value = row.position === selectedPos ? 1 : leaderPoints / row.masterpiecePoints;
+      odds.set(row.profile.uid, value);
+    }
+    return { odds };
+  }, [mp, selectedPos]);
 
   async function connectWallet() {
     setToast("");
