@@ -3,6 +3,19 @@ import path from "path";
 import { fileURLToPath } from "url";
 import express from "express";
 import { makeStore, newId, settleMarket } from "./betting.js";
+import {
+  loadBlackjackState,
+  saveBlackjackState,
+  joinSeat,
+  leaveSeat,
+  updateSeat,
+  shuffleShoe,
+  startRound,
+  hit,
+  stand,
+  doubleDown,
+  resetRound,
+} from "./blackjack.js";
 import { computeModelOdds } from "./odds.js";
 
 const app = express();
@@ -27,6 +40,12 @@ fs.mkdirSync(dataDir, { recursive: true });
 const { store, persist } = makeStore(dataDir);
 const oddsHistoryPath = path.join(dataDir, "odds_history.json");
 const modelHistoryPath = path.join(dataDir, "history.json");
+const blackjackStatePath = path.join(dataDir, "blackjack.json");
+const blackjackState = loadBlackjackState(blackjackStatePath);
+
+function persistBlackjackState() {
+  saveBlackjackState(blackjackStatePath, blackjackState);
+}
 
 // ---- Craft World GraphQL ----
 const GRAPHQL_URL = "https://craft-world.gg/graphql";
@@ -162,6 +181,85 @@ function attachBetToWallet(address, betId) {
 
 // ---- API routes FIRST ----
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
+
+app.get("/api/blackjack/state", (_req, res) => {
+  res.json({ ok: true, state: blackjackState });
+});
+
+app.post("/api/blackjack/join", (req, res) => {
+  const seatId = Number(req.body?.seatId);
+  if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
+  const result = joinSeat(blackjackState, seatId, req.body?.name);
+  if (result.error) return res.status(400).json({ error: result.error });
+  persistBlackjackState();
+  return res.json({ ok: true, state: blackjackState });
+});
+
+app.post("/api/blackjack/leave", (req, res) => {
+  const seatId = Number(req.body?.seatId);
+  if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
+  const result = leaveSeat(blackjackState, seatId);
+  if (result.error) return res.status(400).json({ error: result.error });
+  persistBlackjackState();
+  return res.json({ ok: true, state: blackjackState });
+});
+
+app.post("/api/blackjack/seat", (req, res) => {
+  const seatId = Number(req.body?.seatId);
+  if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
+  const result = updateSeat(blackjackState, seatId, req.body || {});
+  if (result.error) return res.status(400).json({ error: result.error });
+  persistBlackjackState();
+  return res.json({ ok: true, state: blackjackState });
+});
+
+app.post("/api/blackjack/shuffle", (_req, res) => {
+  const result = shuffleShoe(blackjackState);
+  if (result.error) return res.status(400).json({ error: result.error });
+  persistBlackjackState();
+  return res.json({ ok: true, state: blackjackState });
+});
+
+app.post("/api/blackjack/start", (_req, res) => {
+  const result = startRound(blackjackState);
+  if (result.error) return res.status(400).json({ error: result.error });
+  persistBlackjackState();
+  return res.json({ ok: true, state: blackjackState });
+});
+
+app.post("/api/blackjack/hit", (req, res) => {
+  const seatId = Number(req.body?.seatId);
+  if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
+  const result = hit(blackjackState, seatId);
+  if (result.error) return res.status(400).json({ error: result.error });
+  persistBlackjackState();
+  return res.json({ ok: true, state: blackjackState });
+});
+
+app.post("/api/blackjack/stand", (req, res) => {
+  const seatId = Number(req.body?.seatId);
+  if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
+  const result = stand(blackjackState, seatId);
+  if (result.error) return res.status(400).json({ error: result.error });
+  persistBlackjackState();
+  return res.json({ ok: true, state: blackjackState });
+});
+
+app.post("/api/blackjack/double", (req, res) => {
+  const seatId = Number(req.body?.seatId);
+  if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
+  const result = doubleDown(blackjackState, seatId);
+  if (result.error) return res.status(400).json({ error: result.error });
+  persistBlackjackState();
+  return res.json({ ok: true, state: blackjackState });
+});
+
+app.post("/api/blackjack/reset", (_req, res) => {
+  const result = resetRound(blackjackState);
+  if (result.error) return res.status(400).json({ error: result.error });
+  persistBlackjackState();
+  return res.json({ ok: true, state: blackjackState });
+});
 
 app.get("/api/masterpiece/:id", async (req, res) => {
   try {
