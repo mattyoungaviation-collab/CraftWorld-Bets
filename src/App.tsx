@@ -80,6 +80,26 @@ type ModelOddsResponse = {
   odds: Record<string, number>;
 };
 
+type Card = {
+  rank: string;
+  suit: string;
+  value: number;
+};
+
+type SeatStatus = "empty" | "waiting" | "playing" | "stood" | "busted" | "blackjack" | "done";
+
+type BlackjackSeat = {
+  id: number;
+  name: string;
+  bankroll: number;
+  bet: number;
+  hand: Card[];
+  status: SeatStatus;
+  pendingLeave: boolean;
+  joined: boolean;
+  lastOutcome?: "win" | "lose" | "push" | "blackjack";
+};
+
 const COIN_SYMBOL = "$COIN";
 const COIN_CONTRACT = "0x7DC167E270D5EF683CEAF4AFCDF2EFBDD667A9A7";
 const ERC20_BALANCE_OF = "0x70a08231";
@@ -91,6 +111,9 @@ const SERVICE_FEE_ADDRESS = "0xeED0491B506C78EA7fD10988B1E98A3C88e1C630";
 const BET_ESCROW_ADDRESS =
   (import.meta.env.VITE_BET_ESCROW_ADDRESS as string | undefined) ||
   "0x47181FeB839dE75697064CC558eBb470E86449b9";
+const BLACKJACK_DECKS = 6;
+const BLACKJACK_HOUSE_EDGE = 0.6;
+const BLACKJACK_MIN_BET = 25;
 
 function fmt(n: number) {
   return n.toLocaleString();
@@ -129,6 +152,160 @@ function calculateSlidingOdds(appearances: number) {
 function formatPercent(value?: number | null) {
   if (value == null || !Number.isFinite(value)) return "—";
   return `${value.toFixed(1)}%`;
+}
+
+function shuffle<T>(items: T[]) {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+function buildShoe(decks = BLACKJACK_DECKS) {
+  const suits = ["♠", "♥", "♦", "♣"];
+  const ranks = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"];
+  const cards: Card[] = [];
+  for (let d = 0; d < decks; d += 1) {
+    for (const suit of suits) {
+      for (const rank of ranks) {
+        let value = Number(rank);
+        if (Number.isNaN(value)) {
+          value = rank === "A" ? 11 : 10;
+        }
+        cards.push({ rank, suit, value });
+      }
+    }
+  }
+  return shuffle(cards);
+}
+
+function getHandTotals(cards: Card[]) {
+  let total = 0;
+  let aces = 0;
+  for (const card of cards) {
+    total += card.value;
+    if (card.rank === "A") aces += 1;
+  }
+  while (total > 21 && aces > 0) {
+    total -= 10;
+    aces -= 1;
+  }
+  const isSoft = cards.some((card) => card.rank === "A") && total <= 21 && cards.reduce((sum, c) => sum + c.value, 0) !== total;
+  return { total, isSoft, isBust: total > 21 };
+}
+
+function isBlackjack(cards: Card[]) {
+  if (cards.length !== 2) return false;
+  const { total } = getHandTotals(cards);
+  return total === 21;
+}
+
+function formatHand(cards: Card[]) {
+  if (cards.length === 0) return "—";
+  return cards.map((card) => `${card.rank}${card.suit}`).join(" · ");
+}
+
+function basicStrategyDecision(total: number, isSoft: boolean, dealerUpcard: number) {
+  if (isSoft) {
+    if (total >= 19) return "stand";
+    if (total === 18) return dealerUpcard >= 9 || dealerUpcard === 1 ? "hit" : "stand";
+    return "hit";
+  }
+  if (total >= 17) return "stand";
+  if (total <= 11) return "hit";
+  if (total === 12) return dealerUpcard >= 4 && dealerUpcard <= 6 ? "stand" : "hit";
+  return dealerUpcard >= 2 && dealerUpcard <= 6 ? "stand" : "hit";
+}
+
+function drawRandomCard(deck: Card[]) {
+  const index = Math.floor(Math.random() * deck.length);
+  const [card] = deck.splice(index, 1);
+  return card;
+}
+
+function simulateDealerHand(deck: Card[], dealerCards: Card[]) {
+  const cards = [...dealerCards];
+  while (true) {
+    const totals = getHandTotals(cards);
+    if (totals.total > 21) break;
+    if (totals.total > 17) break;
+    if (totals.total === 17 && !totals.isSoft) break;
+    if (deck.length === 0) break;
+    cards.push(drawRandomCard(deck));
+  }
+  return cards;
+}
+
+function simulatePlayerHand(deck: Card[], playerCards: Card[], dealerUpcard: number) {
+  const cards = [...playerCards];
+  while (true) {
+    const totals = getHandTotals(cards);
+    if (totals.total >= 21) break;
+    const decision = basicStrategyDecision(totals.total, totals.isSoft, dealerUpcard);
+    if (decision === "stand") break;
+    if (deck.length === 0) break;
+    cards.push(drawRandomCard(deck));
+  }
+  return cards;
+}
+
+function simulateOdds(
+  baseDeck: Card[],
+  playerCards: Card[],
+  dealerUpcard: Card | null,
+  iterations = 1200
+) {
+  if (!dealerUpcard || playerCards.length === 0) {
+    return { win: 0, push: 0, lose: 0, ev: 0 };
+  }
+  let win = 0;
+  let push = 0;
+  let lose = 0;
+  let ev = 0;
+  for (let i = 0; i < iterations; i += 1) {
+    const deck = [...baseDeck];
+    const upcard = dealerUpcard;
+    const hole = drawRandomCard(deck);
+    const dealerCards = [upcard, hole];
+    const playerSimCards = simulatePlayerHand(deck, playerCards, upcard.value === 11 ? 1 : upcard.value);
+    const playerTotals = getHandTotals(playerSimCards);
+    if (playerTotals.total > 21) {
+      lose += 1;
+      ev -= 1;
+      continue;
+    }
+    const dealerFinal = simulateDealerHand(deck, dealerCards);
+    const dealerTotals = getHandTotals(dealerFinal);
+    const playerHasBlackjack = isBlackjack(playerSimCards);
+    const dealerHasBlackjack = isBlackjack(dealerFinal);
+    if (dealerHasBlackjack && playerHasBlackjack) {
+      push += 1;
+    } else if (playerHasBlackjack) {
+      win += 1;
+      ev += 1.5;
+    } else if (dealerTotals.total > 21) {
+      win += 1;
+      ev += 1;
+    } else if (playerTotals.total > dealerTotals.total) {
+      win += 1;
+      ev += 1;
+    } else if (playerTotals.total < dealerTotals.total) {
+      lose += 1;
+      ev -= 1;
+    } else {
+      push += 1;
+    }
+  }
+  const total = win + push + lose;
+  if (!total) return { win: 0, push: 0, lose: 0, ev: 0 };
+  return {
+    win: (win / total) * 100,
+    push: (push / total) * 100,
+    lose: (lose / total) * 100,
+    ev: ev / total,
+  };
 }
 
 function padAddress(address: string) {
@@ -198,9 +375,26 @@ export default function App() {
   const [futureMode, setFutureMode] = useState(false);
   const [futurePick, setFuturePick] = useState("");
   const [coinPrice, setCoinPrice] = useState<number | null>(null);
+  const [blackjackSeats, setBlackjackSeats] = useState<BlackjackSeat[]>(() =>
+    Array.from({ length: 5 }, (_, index) => ({
+      id: index,
+      name: "",
+      bankroll: 1000,
+      bet: BLACKJACK_MIN_BET,
+      hand: [],
+      status: "empty",
+      pendingLeave: false,
+      joined: false,
+    }))
+  );
+  const [blackjackDealer, setBlackjackDealer] = useState<Card[]>([]);
+  const [blackjackShoe, setBlackjackShoe] = useState<Card[]>(() => buildShoe());
+  const [blackjackPhase, setBlackjackPhase] = useState<"idle" | "player" | "dealer" | "settled">("idle");
+  const [blackjackActiveSeat, setBlackjackActiveSeat] = useState<number | null>(null);
+  const [blackjackLog, setBlackjackLog] = useState<string[]>([]);
   const [coinDecimals, setCoinDecimals] = useState<number>(18);
   const [coinBalance, setCoinBalance] = useState<bigint | null>(null);
-  const [activeTab, setActiveTab] = useState<"betting" | "odds">("betting");
+  const [activeTab, setActiveTab] = useState<"betting" | "odds" | "blackjack">("betting");
   const [oddsRows, setOddsRows] = useState<OddsRow[]>([]);
   const [oddsLoading, setOddsLoading] = useState(false);
   const [oddsError, setOddsError] = useState("");
@@ -1177,6 +1371,291 @@ export default function App() {
     }
   }
 
+  const dealerTotals = useMemo(() => getHandTotals(blackjackDealer), [blackjackDealer]);
+  const blackjackOddsDeck = useMemo(() => {
+    if (blackjackPhase === "player") {
+      return [...blackjackShoe, ...blackjackDealer.slice(1)];
+    }
+    return blackjackShoe;
+  }, [blackjackShoe, blackjackDealer, blackjackPhase]);
+  const blackjackOdds = useMemo(() => {
+    const upcard = blackjackDealer[0] || null;
+    return blackjackSeats.map((seat) =>
+      seat.joined && seat.hand.length > 0
+        ? simulateOdds(blackjackOddsDeck, seat.hand, upcard)
+        : { win: 0, push: 0, lose: 0, ev: 0 }
+    );
+  }, [blackjackSeats, blackjackDealer, blackjackOddsDeck]);
+
+  function appendBlackjackLog(message: string) {
+    setBlackjackLog((prev) => [message, ...prev].slice(0, 6));
+  }
+
+  function updateSeat(id: number, updates: Partial<BlackjackSeat>) {
+    setBlackjackSeats((prev) =>
+      prev.map((seat) => (seat.id === id ? { ...seat, ...updates } : seat))
+    );
+  }
+
+  function joinSeat(id: number) {
+    setBlackjackSeats((prev) =>
+      prev.map((seat) =>
+        seat.id === id
+          ? {
+              ...seat,
+              joined: true,
+              status: "waiting",
+              pendingLeave: false,
+              hand: [],
+              lastOutcome: undefined,
+            }
+          : seat
+      )
+    );
+    appendBlackjackLog(`Seat ${id + 1} joined the table.`);
+  }
+
+  function leaveSeat(id: number) {
+    setBlackjackSeats((prev) =>
+      prev.map((seat) => {
+        if (seat.id !== id) return seat;
+        if (!seat.joined) return seat;
+        if (blackjackPhase === "player" || blackjackPhase === "dealer") {
+          return { ...seat, pendingLeave: true };
+        }
+        return {
+          ...seat,
+          joined: false,
+          status: "empty",
+          hand: [],
+          pendingLeave: false,
+          lastOutcome: undefined,
+        };
+      })
+    );
+    appendBlackjackLog(`Seat ${id + 1} will leave after this round.`);
+  }
+
+  function shuffleShoe() {
+    if (blackjackPhase !== "idle" && blackjackPhase !== "settled") return;
+    setBlackjackShoe(buildShoe());
+    appendBlackjackLog("Dealer shuffled a fresh shoe.");
+  }
+
+  function startBlackjackRound() {
+    const activeSeats = blackjackSeats.filter((seat) => seat.joined);
+    if (activeSeats.length === 0) {
+      appendBlackjackLog("No players seated. Join a seat to start a round.");
+      return;
+    }
+    let shoe = blackjackShoe;
+    const requiredCards = activeSeats.length * 2 + 2;
+    if (shoe.length < requiredCards) {
+      shoe = buildShoe();
+      appendBlackjackLog("Shoe re-shuffled for the next hand.");
+    }
+    const nextShoe = [...shoe];
+    const draw = () => nextShoe.shift();
+    const nextDealer: Card[] = [];
+    const dealtSeats = blackjackSeats.map((seat) => {
+      if (!seat.joined) return seat;
+      const bet = Math.max(BLACKJACK_MIN_BET, Math.min(seat.bet, seat.bankroll));
+      if (bet <= 0 || seat.bankroll < bet) {
+        return { ...seat, status: "waiting", hand: [], lastOutcome: undefined };
+      }
+      const hand = [draw(), draw()].filter(Boolean) as Card[];
+      const status = isBlackjack(hand) ? "blackjack" : "playing";
+      return {
+        ...seat,
+        bet,
+        bankroll: seat.bankroll - bet,
+        hand,
+        status,
+        lastOutcome: undefined,
+      };
+    });
+    nextDealer.push(draw(), draw());
+    const firstPlayingIndex = dealtSeats.findIndex((seat) => seat.joined && seat.status === "playing");
+    setBlackjackSeats(dealtSeats);
+    setBlackjackDealer(nextDealer.filter(Boolean) as Card[]);
+    setBlackjackShoe(nextShoe);
+    if (firstPlayingIndex === -1) {
+      setBlackjackPhase("dealer");
+      setBlackjackActiveSeat(null);
+      resolveDealerAndPayout(dealtSeats, nextDealer.filter(Boolean) as Card[]);
+    } else {
+      setBlackjackPhase("player");
+      setBlackjackActiveSeat(firstPlayingIndex);
+    }
+    appendBlackjackLog("Cards are dealt. Players act in seat order.");
+  }
+
+  function advanceToDealerIfDone(nextSeats: BlackjackSeat[]) {
+    const nextIndex = nextSeats.findIndex((seat) => seat.joined && seat.status === "playing");
+    if (nextIndex === -1) {
+      setBlackjackPhase("dealer");
+      setBlackjackActiveSeat(null);
+      resolveDealerAndPayout(nextSeats);
+    } else {
+      setBlackjackActiveSeat(nextIndex);
+    }
+  }
+
+  function handleHit(seatId: number) {
+    if (blackjackPhase !== "player") return;
+    setBlackjackSeats((prev) => {
+      const seatIndex = prev.findIndex((seat) => seat.id === seatId);
+      if (seatIndex === -1) return prev;
+      if (blackjackActiveSeat !== seatIndex) return prev;
+      const nextSeats = [...prev];
+      const seat = nextSeats[seatIndex];
+      if (seat.status !== "playing") return prev;
+      const nextShoe = [...blackjackShoe];
+      const card = nextShoe.shift();
+      if (!card) return prev;
+      seat.hand = [...seat.hand, card];
+      const totals = getHandTotals(seat.hand);
+      if (totals.total > 21) {
+        seat.status = "busted";
+      } else if (totals.total === 21) {
+        seat.status = "stood";
+      }
+      setBlackjackShoe(nextShoe);
+      if (seat.status !== "playing") {
+        advanceToDealerIfDone(nextSeats);
+      }
+      return nextSeats;
+    });
+  }
+
+  function handleStand(seatId: number) {
+    if (blackjackPhase !== "player") return;
+    setBlackjackSeats((prev) => {
+      const seatIndex = prev.findIndex((seat) => seat.id === seatId);
+      if (seatIndex === -1) return prev;
+      if (blackjackActiveSeat !== seatIndex) return prev;
+      const nextSeats = [...prev];
+      nextSeats[seatIndex] = { ...nextSeats[seatIndex], status: "stood" };
+      advanceToDealerIfDone(nextSeats);
+      return nextSeats;
+    });
+  }
+
+  function handleDouble(seatId: number) {
+    if (blackjackPhase !== "player") return;
+    setBlackjackSeats((prev) => {
+      const seatIndex = prev.findIndex((seat) => seat.id === seatId);
+      if (seatIndex === -1) return prev;
+      if (blackjackActiveSeat !== seatIndex) return prev;
+      const nextSeats = [...prev];
+      const seat = nextSeats[seatIndex];
+      if (seat.status !== "playing" || seat.hand.length !== 2) return prev;
+      if (seat.bankroll < seat.bet) return prev;
+      const nextShoe = [...blackjackShoe];
+      const card = nextShoe.shift();
+      if (!card) return prev;
+      seat.hand = [...seat.hand, card];
+      seat.bankroll -= seat.bet;
+      seat.bet *= 2;
+      const totals = getHandTotals(seat.hand);
+      seat.status = totals.total > 21 ? "busted" : "stood";
+      setBlackjackShoe(nextShoe);
+      advanceToDealerIfDone(nextSeats);
+      return nextSeats;
+    });
+  }
+
+  function resolveDealerAndPayout(currentSeats: BlackjackSeat[], dealerOverride?: Card[]) {
+    setBlackjackShoe((prevShoe) => {
+      const nextShoe = [...prevShoe];
+      const baseDealer = dealerOverride ?? blackjackDealer;
+      const nextDealer = baseDealer.length > 0 ? [...baseDealer] : [];
+      while (nextDealer.length < 2 && nextShoe.length > 0) {
+        nextDealer.push(nextShoe.shift() as Card);
+      }
+      while (true) {
+        const totals = getHandTotals(nextDealer);
+        if (totals.total > 21) break;
+        if (totals.total > 17) break;
+        if (totals.total === 17 && !totals.isSoft) break;
+        if (nextShoe.length === 0) break;
+        nextDealer.push(nextShoe.shift() as Card);
+      }
+      const dealerTotalsFinal = getHandTotals(nextDealer);
+      const dealerHasBlackjack = isBlackjack(nextDealer);
+      const settledSeats = currentSeats.map((seat) => {
+        if (!seat.joined || seat.status === "waiting" || seat.status === "empty") return seat;
+        const playerTotals = getHandTotals(seat.hand);
+        let payout = 0;
+        let outcome: BlackjackSeat["lastOutcome"] = "lose";
+        if (playerTotals.total > 21) {
+          payout = 0;
+          outcome = "lose";
+        } else if (dealerHasBlackjack && isBlackjack(seat.hand)) {
+          payout = seat.bet;
+          outcome = "push";
+        } else if (isBlackjack(seat.hand)) {
+          payout = seat.bet * 2.5;
+          outcome = "blackjack";
+        } else if (dealerTotalsFinal.total > 21) {
+          payout = seat.bet * 2;
+          outcome = "win";
+        } else if (playerTotals.total > dealerTotalsFinal.total) {
+          payout = seat.bet * 2;
+          outcome = "win";
+        } else if (playerTotals.total === dealerTotalsFinal.total) {
+          payout = seat.bet;
+          outcome = "push";
+        }
+        return {
+          ...seat,
+          bankroll: seat.bankroll + payout,
+          status: "done",
+          lastOutcome: outcome,
+        };
+      });
+      setBlackjackDealer(nextDealer);
+      setBlackjackSeats(
+        settledSeats.map((seat) =>
+          seat.pendingLeave
+            ? {
+                ...seat,
+                joined: false,
+                status: "empty",
+                hand: [],
+                pendingLeave: false,
+                lastOutcome: undefined,
+              }
+            : seat
+        )
+      );
+      setBlackjackPhase("settled");
+      appendBlackjackLog(
+        dealerTotalsFinal.total > 21 ? "Dealer busts. Payouts settled." : "Dealer stands. Payouts settled."
+      );
+      return nextShoe;
+    });
+  }
+
+  function resetBlackjackRound() {
+    setBlackjackSeats((prev) =>
+      prev.map((seat) =>
+        seat.joined
+          ? {
+              ...seat,
+              hand: [],
+              status: "waiting",
+              bet: Math.max(BLACKJACK_MIN_BET, seat.bet),
+              lastOutcome: undefined,
+            }
+          : seat
+      )
+    );
+    setBlackjackDealer([]);
+    setBlackjackPhase("idle");
+    setBlackjackActiveSeat(null);
+  }
+
   const feeAmount = useMemo(() => Math.floor((amount * SERVICE_FEE_BPS) / 10000), [amount]);
   const wagerAmount = useMemo(() => Math.max(amount - feeAmount, 0), [amount, feeAmount]);
   const totalInUsd = useMemo(() => (coinPrice || 0) * amount, [coinPrice, amount]);
@@ -1233,6 +1712,12 @@ export default function App() {
         </button>
         <button className={`tab ${activeTab === "odds" ? "active" : ""}`} onClick={() => setActiveTab("odds")}>
           Sports Odds
+        </button>
+        <button
+          className={`tab ${activeTab === "blackjack" ? "active" : ""}`}
+          onClick={() => setActiveTab("blackjack")}
+        >
+          BLACKJACK
         </button>
       </div>
 
@@ -1469,6 +1954,198 @@ export default function App() {
                 </div>
               </button>
             ))}
+          </div>
+        </section>
+      )}
+
+      {activeTab === "blackjack" && (
+        <section className="card blackjack-card">
+          <div className="blackjack-header">
+            <div>
+              <div className="section-title">Blackjack Table</div>
+              <div className="subtle">
+                6-deck shoe · Dealer hits soft 17 · Blackjack pays 3:2 · Double on any two cards · No splits.
+              </div>
+            </div>
+            <div className="blackjack-actions">
+              <button className="btn" onClick={shuffleShoe} disabled={blackjackPhase === "player" || blackjackPhase === "dealer"}>
+                Shuffle Shoe
+              </button>
+              <button
+                className="btn"
+                onClick={resetBlackjackRound}
+                disabled={blackjackPhase === "player" || blackjackPhase === "dealer"}
+              >
+                Reset Round
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={startBlackjackRound}
+                disabled={blackjackPhase === "player" || blackjackPhase === "dealer"}
+              >
+                Deal
+              </button>
+            </div>
+          </div>
+
+          <div className="blackjack-meta">
+            <div>
+              <div className="label">House Edge</div>
+              <div className="title">{BLACKJACK_HOUSE_EDGE.toFixed(1)}%</div>
+              <div className="subtle">Calculated under the rules above with basic strategy.</div>
+            </div>
+            <div>
+              <div className="label">Shoe</div>
+              <div className="title">
+                {blackjackShoe.length} cards · {BLACKJACK_DECKS} decks
+              </div>
+              <div className="subtle">Auto reshuffles when the shoe is low.</div>
+            </div>
+            <div>
+              <div className="label">Phase</div>
+              <div className="title">{blackjackPhase === "idle" ? "Waiting" : blackjackPhase}</div>
+              <div className="subtle">
+                {blackjackActiveSeat !== null ? `Seat ${blackjackActiveSeat + 1} to act.` : "Dealer pending."}
+              </div>
+            </div>
+          </div>
+
+          <div className="dealer-row">
+            <div className="dealer-title">Dealer</div>
+            <div className="dealer-hand">
+              {blackjackDealer.length === 0 ? (
+                <span>—</span>
+              ) : blackjackPhase === "player" ? (
+                <span>
+                  {blackjackDealer[0] ? `${blackjackDealer[0].rank}${blackjackDealer[0].suit}` : "—"} · ??
+                </span>
+              ) : (
+                <span>{formatHand(blackjackDealer)}</span>
+              )}
+            </div>
+            <div className="dealer-total">
+              {blackjackDealer.length === 0
+                ? "Total: —"
+                : blackjackPhase === "player"
+                ? "Total: ?"
+                : `Total: ${dealerTotals.total}`}
+            </div>
+          </div>
+
+          <div className="blackjack-seats">
+            {blackjackSeats.map((seat, index) => {
+              const totals = getHandTotals(seat.hand);
+              const odds = blackjackOdds[index];
+              const isActive = blackjackActiveSeat === index && blackjackPhase === "player";
+              const canAct = isActive && seat.status === "playing";
+              return (
+                <div
+                  className={`seat-card ${seat.joined ? "occupied" : "open"} ${isActive ? "active" : ""}`}
+                  key={seat.id}
+                >
+                  <div className="seat-header">
+                    <div>
+                      <div className="seat-title">Seat {index + 1}</div>
+                      <div className="subtle">{seat.joined ? seat.name || "Player" : "Open seat"}</div>
+                    </div>
+                    {seat.joined ? (
+                      <button className="btn btn-ghost" onClick={() => leaveSeat(seat.id)}>
+                        {seat.pendingLeave ? "Leaving..." : "Leave"}
+                      </button>
+                    ) : (
+                      <button className="btn btn-primary" onClick={() => joinSeat(seat.id)}>
+                        Join
+                      </button>
+                    )}
+                  </div>
+
+                  {seat.joined && (
+                    <>
+                      <div className="seat-fields">
+                        <div>
+                          <label>Name</label>
+                          <input
+                            value={seat.name}
+                            onChange={(e) => updateSeat(seat.id, { name: e.target.value })}
+                            placeholder="Player name"
+                            disabled={blackjackPhase === "player" || blackjackPhase === "dealer"}
+                          />
+                        </div>
+                        <div>
+                          <label>Buy-in</label>
+                          <input
+                            type="number"
+                            min={0}
+                            value={seat.bankroll}
+                            onChange={(e) => updateSeat(seat.id, { bankroll: Number(e.target.value) })}
+                            disabled={blackjackPhase === "player" || blackjackPhase === "dealer"}
+                          />
+                        </div>
+                        <div>
+                          <label>Bet</label>
+                          <input
+                            type="number"
+                            min={BLACKJACK_MIN_BET}
+                            value={seat.bet}
+                            onChange={(e) => updateSeat(seat.id, { bet: Number(e.target.value) })}
+                            disabled={blackjackPhase === "player" || blackjackPhase === "dealer"}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="seat-hand">
+                        <div className="seat-hand-cards">{formatHand(seat.hand)}</div>
+                        <div className="subtle">
+                          Total: {seat.hand.length > 0 ? totals.total : "—"} · Status: {seat.status}
+                        </div>
+                        {seat.lastOutcome && (
+                          <div className={`seat-outcome seat-outcome-${seat.lastOutcome}`}>
+                            {seat.lastOutcome.toUpperCase()}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="seat-odds">
+                        <div>
+                          Win: {odds.win.toFixed(1)}% · Push: {odds.push.toFixed(1)}% · Lose:{" "}
+                          {odds.lose.toFixed(1)}%
+                        </div>
+                        <div className="subtle">EV: {odds.ev >= 0 ? "+" : ""}{odds.ev.toFixed(2)}x per unit</div>
+                      </div>
+
+                      <div className="seat-actions">
+                        <button className="btn" onClick={() => handleHit(seat.id)} disabled={!canAct}>
+                          Hit
+                        </button>
+                        <button className="btn" onClick={() => handleStand(seat.id)} disabled={!canAct}>
+                          Stand
+                        </button>
+                        <button
+                          className="btn"
+                          onClick={() => handleDouble(seat.id)}
+                          disabled={!canAct || seat.bankroll < seat.bet || seat.hand.length !== 2}
+                        >
+                          Double
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="blackjack-log">
+            <div className="section-title">Live Table Log</div>
+            {blackjackLog.length === 0 ? (
+              <div className="subtle">Log updates will appear here as players enter, leave, and play hands.</div>
+            ) : (
+              <ul>
+                {blackjackLog.map((entry, index) => (
+                  <li key={`${entry}-${index}`}>{entry}</li>
+                ))}
+              </ul>
+            )}
           </div>
         </section>
       )}
