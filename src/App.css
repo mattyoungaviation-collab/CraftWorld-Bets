@@ -325,6 +325,15 @@ select {
   flex-wrap: wrap;
 }
 
+.odds-search {
+  flex: 1;
+  min-width: 220px;
+}
+
+.odds-search input {
+  width: 100%;
+}
+
 .odds-actions {
   display: flex;
   gap: 12px;

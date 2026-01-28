@@ -178,6 +178,7 @@ export default function App() {
   const [oddsLoading, setOddsLoading] = useState(false);
   const [oddsError, setOddsError] = useState("");
   const [oddsHistory, setOddsHistory] = useState<OddsHistory | null>(null);
+  const [oddsSearch, setOddsSearch] = useState("");
   const [selectedOddsPlayer, setSelectedOddsPlayer] = useState<OddsRow | null>(null);
   const [pendingBet, setPendingBet] = useState<{
     type: "live" | "future";
@@ -624,22 +625,18 @@ export default function App() {
       });
     }
 
-    const tierRank: Record<OddsRow["tierTone"], number> = {
-      elite: 0,
-      mid: 1,
-      low: 2,
-      new: 3,
-    };
-
-    rows.sort((a, b) => {
-      if (tierRank[a.tierTone] !== tierRank[b.tierTone]) {
-        return tierRank[a.tierTone] - tierRank[b.tierTone];
-      }
-      return a.odds - b.odds;
-    });
+    rows.sort((a, b) => a.odds - b.odds);
 
     return rows;
   }
+
+  const filteredOddsRows = useMemo(() => {
+    const query = oddsSearch.trim().toLowerCase();
+    if (!query) return oddsRows;
+    return oddsRows.filter(
+      (row) => row.name.toLowerCase().includes(query) || row.uid.toLowerCase().includes(query)
+    );
+  }, [oddsRows, oddsSearch]);
 
   async function loadOddsHistory() {
     setOddsLoading(true);
@@ -1178,6 +1175,16 @@ export default function App() {
                   : "Load the full history to build odds."}
               </div>
             </div>
+            <div className="odds-search">
+              <label htmlFor="odds-search-input">Search player</label>
+              <input
+                id="odds-search-input"
+                type="text"
+                placeholder="Search by name or ID"
+                value={oddsSearch}
+                onChange={(e) => setOddsSearch(e.target.value)}
+              />
+            </div>
             <div className="odds-actions">
               <button className="btn" onClick={loadOddsHistory} disabled={oddsLoading}>
                 {oddsLoading ? "Loading odds..." : "Load Odds"}
@@ -1202,10 +1209,14 @@ export default function App() {
               <div className="numeric">Odds</div>
               <div className="cell-center">Tier</div>
             </div>
-            {oddsRows.length === 0 && !oddsLoading && (
-              <div className="empty">Load the history to see veteran, mid-level, low-level, and new players.</div>
+            {filteredOddsRows.length === 0 && !oddsLoading && (
+              <div className="empty">
+                {oddsRows.length === 0
+                  ? "Load the history to see veteran, mid-level, low-level, and new players."
+                  : "No players match that search."}
+              </div>
             )}
-            {oddsRows.map((row) => (
+            {filteredOddsRows.map((row) => (
               <button
                 key={row.uid}
                 className="table-row odds-row"
