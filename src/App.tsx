@@ -60,6 +60,7 @@ type OddsRow = {
   odds: number;
   tier: string;
   tierTone: "elite" | "mid" | "low" | "new";
+  tierRank: number;
   contributions: Array<{
     masterpieceId: string;
     masterpieceName: string;
@@ -207,6 +208,10 @@ export default function App() {
   const [modelOdds, setModelOdds] = useState<ModelOddsResponse | null>(null);
   const [oddsSearch, setOddsSearch] = useState("");
   const [selectedOddsPlayer, setSelectedOddsPlayer] = useState<OddsRow | null>(null);
+  const [oddsSortKey, setOddsSortKey] = useState<"winPercent" | "odds" | "appearances" | "avgPlacement" | "tier">(
+    "odds"
+  );
+  const [oddsSortDirection, setOddsSortDirection] = useState<"asc" | "desc">("asc");
   const [pendingBet, setPendingBet] = useState<{
     type: "live" | "future";
     pickedUid: string;
@@ -721,6 +726,7 @@ export default function App() {
         odds,
         tier,
         tierTone,
+        tierRank: participationPercent,
         contributions: player.contributions.slice().sort((a, b) => Number(a.masterpieceId) - Number(b.masterpieceId)),
       });
     }
@@ -741,6 +747,62 @@ export default function App() {
       (row) => row.name.toLowerCase().includes(query) || row.uid.toLowerCase().includes(query)
     );
   }, [oddsRows, oddsSearch]);
+
+  function getOddsSortDirection(
+    key: "winPercent" | "odds" | "appearances" | "avgPlacement" | "tier"
+  ): "asc" | "desc" {
+    if (key === "odds" || key === "avgPlacement") return "asc";
+    return "desc";
+  }
+
+  function handleOddsSort(
+    key: "winPercent" | "odds" | "appearances" | "avgPlacement" | "tier"
+  ) {
+    if (oddsSortKey === key) {
+      setOddsSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
+    } else {
+      setOddsSortKey(key);
+      setOddsSortDirection(getOddsSortDirection(key));
+    }
+  }
+
+  const sortedOddsRows = useMemo(() => {
+    const sorted = filteredOddsRows.slice();
+    sorted.sort((a, b) => {
+      let aValue: number;
+      let bValue: number;
+      switch (oddsSortKey) {
+        case "winPercent":
+          aValue = Number.isFinite(a.winPercent) ? a.winPercent : 0;
+          bValue = Number.isFinite(b.winPercent) ? b.winPercent : 0;
+          break;
+        case "odds":
+          aValue = Number.isFinite(a.odds) ? a.odds : Number.POSITIVE_INFINITY;
+          bValue = Number.isFinite(b.odds) ? b.odds : Number.POSITIVE_INFINITY;
+          break;
+        case "appearances":
+          aValue = a.appearances;
+          bValue = b.appearances;
+          break;
+        case "avgPlacement":
+          aValue = a.avgPlacement > 0 ? a.avgPlacement : Number.POSITIVE_INFINITY;
+          bValue = b.avgPlacement > 0 ? b.avgPlacement : Number.POSITIVE_INFINITY;
+          break;
+        case "tier":
+          aValue = a.tierRank;
+          bValue = b.tierRank;
+          break;
+        default:
+          aValue = 0;
+          bValue = 0;
+      }
+      if (aValue === bValue) {
+        return a.name.localeCompare(b.name);
+      }
+      return oddsSortDirection === "asc" ? aValue - bValue : bValue - aValue;
+    });
+    return sorted;
+  }, [filteredOddsRows, oddsSortDirection, oddsSortKey]);
 
   async function loadOddsHistory() {
     setOddsLoading(true);
@@ -1329,11 +1391,42 @@ export default function App() {
           <div className="table odds-table">
             <div className="table-header">
               <div>Player</div>
-              <div className="numeric">Win % (1st)</div>
-              <div className="numeric">Odds</div>
-              <div className="numeric">Placements</div>
-              <div className="numeric">Avg Place</div>
-              <div className="cell-center">Tier</div>
+              <button
+                className="sort-button numeric"
+                type="button"
+                onClick={() => handleOddsSort("winPercent")}
+              >
+                Win % (1st)
+                {oddsSortKey === "winPercent" && <span className="sort-indicator">{oddsSortDirection}</span>}
+              </button>
+              <button className="sort-button numeric" type="button" onClick={() => handleOddsSort("odds")}>
+                Odds
+                {oddsSortKey === "odds" && <span className="sort-indicator">{oddsSortDirection}</span>}
+              </button>
+              <button
+                className="sort-button numeric"
+                type="button"
+                onClick={() => handleOddsSort("appearances")}
+              >
+                Placements
+                {oddsSortKey === "appearances" && <span className="sort-indicator">{oddsSortDirection}</span>}
+              </button>
+              <button
+                className="sort-button numeric"
+                type="button"
+                onClick={() => handleOddsSort("avgPlacement")}
+              >
+                Avg Place
+                {oddsSortKey === "avgPlacement" && <span className="sort-indicator">{oddsSortDirection}</span>}
+              </button>
+              <button
+                className="sort-button cell-center"
+                type="button"
+                onClick={() => handleOddsSort("tier")}
+              >
+                Tier
+                {oddsSortKey === "tier" && <span className="sort-indicator">{oddsSortDirection}</span>}
+              </button>
             </div>
             {filteredOddsRows.length === 0 && !oddsLoading && (
               <div className="empty">
@@ -1342,7 +1435,7 @@ export default function App() {
                   : "No players match that search."}
               </div>
             )}
-            {filteredOddsRows.map((row) => (
+            {sortedOddsRows.map((row) => (
               <button
                 key={row.uid}
                 className="table-row odds-row"

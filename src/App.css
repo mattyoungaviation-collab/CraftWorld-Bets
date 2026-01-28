@@ -227,6 +227,33 @@ select {
   letter-spacing: 0.08em;
 }
 
+.table-header .sort-button {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  cursor: pointer;
+  justify-self: start;
+}
+
+.table-header .sort-button.numeric {
+  justify-self: end;
+}
+
+.table-header .sort-button.cell-center {
+  justify-self: center;
+}
+
+.table-header .sort-indicator {
+  font-size: 10px;
+}
+
 .table-row {
   border-top: 1px solid #f1f5f9;
   background: white;
