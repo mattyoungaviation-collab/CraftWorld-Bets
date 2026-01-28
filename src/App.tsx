@@ -47,6 +47,18 @@ type Bet = {
   futureBet?: boolean;
 };
 
+type PlayerOddsRow = {
+  uid: string;
+  name: string;
+  avatarUrl?: string | null;
+  appearances: number;
+  averageFinish: number;
+  top3Count: number;
+  impliedWin: number;
+  oddsDecimal: number;
+  tier: "Veteran" | "Mid-level" | "Low-level" | "New";
+};
+
 const COIN_SYMBOL = "$COIN";
 const COIN_CONTRACT = "0x7DC167E270D5EF683CEAF4AFCDF2EFBDD667A9A7";
 const ERC20_BALANCE_OF = "0x70a08231";
@@ -102,6 +114,10 @@ function padTopicAddress(address: string) {
   return `0x${padAddress(address)}`;
 }
 
+function clamp(n: number, min: number, max: number) {
+  return Math.min(Math.max(n, min), max);
+}
+
 function findTransferAmount(logs: Array<{ topics?: string[]; data?: string; address?: string }>, to: string) {
   const target = padTopicAddress(to);
   for (const log of logs) {
@@ -146,6 +162,12 @@ export default function App() {
   const [coinPrice, setCoinPrice] = useState<number | null>(null);
   const [coinDecimals, setCoinDecimals] = useState<number>(18);
   const [coinBalance, setCoinBalance] = useState<bigint | null>(null);
+  const [oddsStartId, setOddsStartId] = useState<number>(1);
+  const [oddsEndId, setOddsEndId] = useState<number>(() => mpId);
+  const [oddsLoading, setOddsLoading] = useState(false);
+  const [oddsError, setOddsError] = useState("");
+  const [oddsRows, setOddsRows] = useState<PlayerOddsRow[]>([]);
+  const [oddsRange, setOddsRange] = useState<{ start: number; end: number } | null>(null);
   const [pendingBet, setPendingBet] = useState<{
     type: "live" | "future";
     pickedUid: string;
@@ -164,6 +186,10 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem("cw_bets_mp_id", String(mpId));
+  }, [mpId]);
+
+  useEffect(() => {
+    setOddsEndId((prev) => (prev === 0 ? mpId : prev));
   }, [mpId]);
 
   useEffect(() => {
@@ -242,6 +268,106 @@ export default function App() {
       }
     } finally {
       setLoading(false);
+    }
+  }
+
+  function buildOddsRows(history: Masterpiece[]) {
+    const map = new Map<
+      string,
+      {
+        uid: string;
+        name: string;
+        avatarUrl?: string | null;
+        appearances: number;
+        totalFinish: number;
+        top3Count: number;
+      }
+    >();
+
+    for (const masterpiece of history) {
+      for (const row of masterpiece.leaderboard) {
+        const uid = row.profile.uid;
+        const name = row.profile.displayName || uid;
+        const existing =
+          map.get(uid) ||
+          ({
+            uid,
+            name,
+            avatarUrl: row.profile.avatarUrl,
+            appearances: 0,
+            totalFinish: 0,
+            top3Count: 0,
+          } as const);
+        const updated = {
+          ...existing,
+          name,
+          avatarUrl: row.profile.avatarUrl ?? existing.avatarUrl,
+          appearances: existing.appearances + 1,
+          totalFinish: existing.totalFinish + row.position,
+          top3Count: existing.top3Count + (row.position <= 3 ? 1 : 0),
+        };
+        map.set(uid, updated);
+      }
+    }
+
+    const rows: PlayerOddsRow[] = [];
+    for (const record of map.values()) {
+      const averageFinish = record.totalFinish / record.appearances;
+      const placementScore = (101 - averageFinish) / 100;
+      const top3Rate = record.top3Count / record.appearances;
+      const impliedWin =
+        record.appearances < 3 ? 0.5 : clamp(top3Rate * 0.6 + placementScore * 0.4, 0.05, 0.8);
+      const oddsDecimal = 1 / impliedWin;
+      let tier: PlayerOddsRow["tier"] = "Low-level";
+      if (record.appearances < 3) {
+        tier = "New";
+      } else if (impliedWin >= 0.35) {
+        tier = "Veteran";
+      } else if (impliedWin >= 0.2) {
+        tier = "Mid-level";
+      }
+      rows.push({
+        uid: record.uid,
+        name: record.name,
+        avatarUrl: record.avatarUrl,
+        appearances: record.appearances,
+        averageFinish,
+        top3Count: record.top3Count,
+        impliedWin,
+        oddsDecimal,
+        tier,
+      });
+    }
+
+    rows.sort((a, b) => {
+      if (b.impliedWin !== a.impliedWin) return b.impliedWin - a.impliedWin;
+      if (b.appearances !== a.appearances) return b.appearances - a.appearances;
+      return a.averageFinish - b.averageFinish;
+    });
+
+    return rows.slice(0, 60);
+  }
+
+  async function loadOddsBoard() {
+    const start = Math.max(1, Math.min(oddsStartId || 1, oddsEndId || 1));
+    const end = Math.max(start, oddsEndId || start);
+    setOddsLoading(true);
+    setOddsError("");
+
+    try {
+      const history: Masterpiece[] = [];
+      for (let id = start; id <= end; id += 1) {
+        const masterpiece = await fetchMasterpiece(id);
+        history.push(masterpiece);
+      }
+      const rows = buildOddsRows(history);
+      setOddsRows(rows);
+      setOddsRange({ start, end });
+    } catch (error) {
+      console.error(error);
+      setOddsError("Unable to build odds. Check your CraftWorld API credentials.");
+    } finally {
+      setOddsLoading(false);
     }
   }
 
@@ -941,6 +1067,82 @@ export default function App() {
           <div className="subtle">
             {dynamiteResource ? "Dynamite donated / target amount." : "Betting closes when dynamite is full."}
           </div>
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="section-title">Player Odds Board</div>
+        <div className="subtle">
+          Sportsbook-style odds based on historic masterpiece placements. Players with fewer than 3 placements are
+          shown at even odds.
+        </div>
+        <div className="grid-4 odds-controls">
+          <div>
+            <label>History start ID</label>
+            <input type="number" min={1} value={oddsStartId} onChange={(e) => setOddsStartId(Number(e.target.value))} />
+          </div>
+          <div>
+            <label>History end ID</label>
+            <input type="number" min={oddsStartId} value={oddsEndId} onChange={(e) => setOddsEndId(Number(e.target.value))} />
+          </div>
+          <div className="odds-actions">
+            <button className="btn btn-primary" onClick={loadOddsBoard} disabled={oddsLoading}>
+              {oddsLoading ? "Building..." : "Build Odds"}
+            </button>
+            <button className="btn" onClick={() => setOddsEndId(mpId)}>
+              Use Current ID
+            </button>
+          </div>
+          <div className="odds-summary">
+            <div className="label">Range</div>
+            <div className="title">{oddsRange ? `${oddsRange.start} → ${oddsRange.end}` : "Not loaded"}</div>
+            <div className="subtle">Showing top {oddsRows.length || 0} players by implied win.</div>
+          </div>
+        </div>
+        {oddsError && <div className="toast toast-error">{oddsError}</div>}
+        <div className="table odds-table">
+          <div className="table-header">
+            <div>Player</div>
+            <div className="cell-center">Tier</div>
+            <div className="numeric">Appearances</div>
+            <div className="numeric">Avg Finish</div>
+            <div className="numeric">Top 3</div>
+            <div className="numeric">Implied Win</div>
+            <div className="numeric">Odds</div>
+          </div>
+          {oddsRows.map((row) => (
+            <div className="table-row static" key={row.uid}>
+              <div className="player">
+                {row.avatarUrl ? (
+                  <img
+                    src={row.avatarUrl}
+                    alt=""
+                    className="avatar"
+                    onError={(e) => ((e.currentTarget.style.display = "none"))}
+                  />
+                ) : (
+                  <div className="avatar placeholder" />
+                )}
+                <div>
+                  <div className="name">{row.name}</div>
+                  <div className="subtle">{row.uid}</div>
+                </div>
+              </div>
+              <div className="cell-center">
+                <span className={`tier-badge ${row.tier.toLowerCase().replace(" ", "-")}`}>{row.tier}</span>
+              </div>
+              <div className="numeric">{row.appearances}</div>
+              <div className="numeric">#{row.averageFinish.toFixed(1)}</div>
+              <div className="numeric">{row.top3Count}</div>
+              <div className="numeric">{row.impliedWin < 1 ? `${(row.impliedWin * 100).toFixed(1)}%` : "100%"}</div>
+              <div className="numeric">
+                {row.appearances < 3 ? "Even (1:1)" : `${row.oddsDecimal.toFixed(2)}x`}
+              </div>
+            </div>
+          ))}
+          {!oddsLoading && oddsRows.length === 0 && (
+            <div className="empty">Build the odds board to see player ratings.</div>
+          )}
         </div>
       </section>
 
