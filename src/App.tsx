@@ -113,7 +113,7 @@ function formatOdds(odds: number) {
 }
 
 function formatPercent(value?: number | null) {
-  if (!Number.isFinite(value)) return "—";
+  if (value == null || !Number.isFinite(value)) return "—";
   return `${value.toFixed(1)}%`;
 }
 
