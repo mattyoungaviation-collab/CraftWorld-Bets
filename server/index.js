@@ -14,7 +14,10 @@ import {
   hit,
   stand,
   doubleDown,
+  splitHand,
+  timeoutStand,
   resetRound,
+  ROUND_COOLDOWN_MS,
 } from "./blackjack.js";
 import { computeModelOdds } from "./odds.js";
 
@@ -45,6 +48,31 @@ const blackjackState = loadBlackjackState(blackjackStatePath);
 
 function persistBlackjackState() {
   saveBlackjackState(blackjackStatePath, blackjackState);
+}
+
+function queueNextRoundIfNeeded() {
+  const hasPlayers = blackjackState.seats.some((seat) => seat.joined);
+  if (!hasPlayers) return false;
+  const now = Date.now();
+  if (blackjackState.phase === "player" || blackjackState.phase === "dealer") return false;
+  if (!blackjackState.cooldownExpiresAt || blackjackState.cooldownExpiresAt <= now) {
+    blackjackState.cooldownExpiresAt = now + ROUND_COOLDOWN_MS;
+    blackjackState.log = [
+      `Next round starts in ${Math.floor(ROUND_COOLDOWN_MS / 1000)}s.`,
+      ...(blackjackState.log || []),
+    ].slice(0, 6);
+    blackjackState.updatedAt = new Date().toISOString();
+    return true;
+  }
+  return false;
+}
+
+function tryStartNextRound() {
+  const now = Date.now();
+  if (blackjackState.phase === "player" || blackjackState.phase === "dealer") return false;
+  if (!blackjackState.cooldownExpiresAt || blackjackState.cooldownExpiresAt > now) return false;
+  const result = startRound(blackjackState);
+  return !result.error;
 }
 
 // ---- Craft World GraphQL ----
@@ -156,6 +184,8 @@ function ensureWalletRecord(address) {
   const existing = store.wallets[normalized];
   if (existing) {
     existing.lastSeenAt = new Date().toISOString();
+    existing.balance = Number(existing.balance || 0);
+    if (!Array.isArray(existing.ledger)) existing.ledger = [];
     return existing;
   }
   const record = {
@@ -163,9 +193,69 @@ function ensureWalletRecord(address) {
     firstSeenAt: new Date().toISOString(),
     lastSeenAt: new Date().toISOString(),
     betIds: [],
+    balance: 0,
+    ledger: [],
   };
   store.wallets[normalized] = record;
   return record;
+}
+
+function addLedgerEntry(address, entry) {
+  const record = ensureWalletRecord(address);
+  if (!record) return null;
+  record.ledger = Array.isArray(record.ledger) ? record.ledger : [];
+  record.balance = Number(record.balance || 0);
+  record.balance += Number(entry.amount || 0);
+  record.ledger.push({
+    id: newId(),
+    createdAt: new Date().toISOString(),
+    ...entry,
+  });
+  if (record.ledger.length > 100) {
+    record.ledger = record.ledger.slice(-100);
+  }
+  return record;
+}
+
+function syncWalletBalancesFromSeats() {
+  blackjackState.seats.forEach((seat) => {
+    if (!seat.joined || !seat.walletAddress) return;
+    const record = ensureWalletRecord(seat.walletAddress);
+    if (!record) return;
+    record.balance = Number(seat.bankroll || 0);
+  });
+}
+
+function applyBlackjackLedgerQueue() {
+  if (!Array.isArray(blackjackState.ledgerQueue) || blackjackState.ledgerQueue.length === 0) return;
+  blackjackState.ledgerQueue.forEach((entry) => {
+    if (!entry?.walletAddress) return;
+    addLedgerEntry(entry.walletAddress, {
+      type: entry.type || "adjustment",
+      amount: Number(entry.amount || 0),
+      seatId: entry.seatId ?? null,
+      handIndex: entry.handIndex ?? null,
+    });
+  });
+  blackjackState.ledgerQueue = [];
+}
+
+function persistBlackjackUpdates() {
+  applyBlackjackLedgerQueue();
+  syncWalletBalancesFromSeats();
+  persist();
+  persistBlackjackState();
+}
+
+function requireSeatOwner(seatId, walletAddress) {
+  const seat = blackjackState.seats.find((s) => s.id === seatId);
+  if (!seat || !seat.joined) return { error: "Seat not found" };
+  const normalized = normalizeWallet(walletAddress);
+  if (!normalized) return { error: "walletAddress required" };
+  if (!seat.walletAddress || seat.walletAddress !== normalized) {
+    return { error: "Seat is owned by a different wallet" };
+  }
+  return { ok: true, seat };
 }
 
 function attachBetToWallet(address, betId) {
@@ -189,75 +279,100 @@ app.get("/api/blackjack/state", (_req, res) => {
 app.post("/api/blackjack/join", (req, res) => {
   const seatId = Number(req.body?.seatId);
   if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
-  const result = joinSeat(blackjackState, seatId, req.body?.name);
+  const walletAddress = normalizeWallet(req.body?.walletAddress);
+  const walletRecord = walletAddress ? ensureWalletRecord(walletAddress) : null;
+  const bankrollOverride = walletRecord ? walletRecord.balance : null;
+  const result = joinSeat(blackjackState, seatId, req.body?.name, walletAddress, bankrollOverride);
   if (result.error) return res.status(400).json({ error: result.error });
-  persistBlackjackState();
+  queueNextRoundIfNeeded();
+  persistBlackjackUpdates();
   return res.json({ ok: true, state: blackjackState });
 });
 
 app.post("/api/blackjack/leave", (req, res) => {
   const seatId = Number(req.body?.seatId);
   if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
+  const ownership = requireSeatOwner(seatId, req.body?.walletAddress);
+  if (ownership.error) return res.status(403).json({ error: ownership.error });
   const result = leaveSeat(blackjackState, seatId);
   if (result.error) return res.status(400).json({ error: result.error });
-  persistBlackjackState();
+  persistBlackjackUpdates();
   return res.json({ ok: true, state: blackjackState });
 });
 
 app.post("/api/blackjack/seat", (req, res) => {
   const seatId = Number(req.body?.seatId);
   if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
+  const ownership = requireSeatOwner(seatId, req.body?.walletAddress);
+  if (ownership.error) return res.status(403).json({ error: ownership.error });
   const result = updateSeat(blackjackState, seatId, req.body || {});
   if (result.error) return res.status(400).json({ error: result.error });
-  persistBlackjackState();
+  persistBlackjackUpdates();
   return res.json({ ok: true, state: blackjackState });
 });
 
 app.post("/api/blackjack/shuffle", (_req, res) => {
   const result = shuffleShoe(blackjackState);
   if (result.error) return res.status(400).json({ error: result.error });
-  persistBlackjackState();
+  persistBlackjackUpdates();
   return res.json({ ok: true, state: blackjackState });
 });
 
 app.post("/api/blackjack/start", (_req, res) => {
   const result = startRound(blackjackState);
   if (result.error) return res.status(400).json({ error: result.error });
-  persistBlackjackState();
+  persistBlackjackUpdates();
   return res.json({ ok: true, state: blackjackState });
 });
 
 app.post("/api/blackjack/hit", (req, res) => {
   const seatId = Number(req.body?.seatId);
   if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
+  const ownership = requireSeatOwner(seatId, req.body?.walletAddress);
+  if (ownership.error) return res.status(403).json({ error: ownership.error });
   const result = hit(blackjackState, seatId);
   if (result.error) return res.status(400).json({ error: result.error });
-  persistBlackjackState();
+  persistBlackjackUpdates();
   return res.json({ ok: true, state: blackjackState });
 });
 
 app.post("/api/blackjack/stand", (req, res) => {
   const seatId = Number(req.body?.seatId);
   if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
+  const ownership = requireSeatOwner(seatId, req.body?.walletAddress);
+  if (ownership.error) return res.status(403).json({ error: ownership.error });
   const result = stand(blackjackState, seatId);
   if (result.error) return res.status(400).json({ error: result.error });
-  persistBlackjackState();
+  persistBlackjackUpdates();
   return res.json({ ok: true, state: blackjackState });
 });
 
 app.post("/api/blackjack/double", (req, res) => {
   const seatId = Number(req.body?.seatId);
   if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
+  const ownership = requireSeatOwner(seatId, req.body?.walletAddress);
+  if (ownership.error) return res.status(403).json({ error: ownership.error });
   const result = doubleDown(blackjackState, seatId);
   if (result.error) return res.status(400).json({ error: result.error });
-  persistBlackjackState();
+  persistBlackjackUpdates();
+  return res.json({ ok: true, state: blackjackState });
+});
+
+app.post("/api/blackjack/split", (req, res) => {
+  const seatId = Number(req.body?.seatId);
+  if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
+  const ownership = requireSeatOwner(seatId, req.body?.walletAddress);
+  if (ownership.error) return res.status(403).json({ error: ownership.error });
+  const result = splitHand(blackjackState, seatId);
+  if (result.error) return res.status(400).json({ error: result.error });
+  persistBlackjackUpdates();
   return res.json({ ok: true, state: blackjackState });
 });
 
 app.post("/api/blackjack/reset", (_req, res) => {
   const result = resetRound(blackjackState);
   if (result.error) return res.status(400).json({ error: result.error });
-  persistBlackjackState();
+  persistBlackjackUpdates();
   return res.json({ ok: true, state: blackjackState });
 });
 
@@ -320,6 +435,69 @@ app.post("/api/wallets/register", (req, res) => {
     return res.json({ ok: true, wallet: record });
   } catch (e) {
     return res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get("/api/wallets/:address/ledger", (req, res) => {
+  try {
+    const normalized = normalizeWallet(req.params.address);
+    if (!normalized) return res.status(400).json({ error: "invalid address" });
+    const wallet = ensureWalletRecord(normalized);
+    persist();
+    res.json({ ok: true, wallet });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.post("/api/wallets/:address/deposit", (req, res) => {
+  try {
+    const normalized = normalizeWallet(req.params.address);
+    if (!normalized) return res.status(400).json({ error: "invalid address" });
+    const amount = Number(req.body?.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ error: "amount must be positive" });
+    }
+    const txHash = String(req.body?.txHash || "");
+    const record = ensureWalletRecord(normalized);
+    const existing = record.ledger?.find((entry) => entry.txHash && entry.txHash === txHash);
+    if (txHash && existing) return res.status(400).json({ error: "deposit already recorded" });
+    addLedgerEntry(normalized, { type: "deposit", amount, txHash: txHash || null });
+    blackjackState.seats.forEach((seat) => {
+      if (seat.joined && seat.walletAddress === normalized) {
+        seat.bankroll = Number(record.balance || 0);
+      }
+    });
+    persistBlackjackUpdates();
+    res.json({ ok: true, wallet: record });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.post("/api/wallets/:address/withdraw", (req, res) => {
+  try {
+    const normalized = normalizeWallet(req.params.address);
+    if (!normalized) return res.status(400).json({ error: "invalid address" });
+    const amount = Number(req.body?.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ error: "amount must be positive" });
+    }
+    const record = ensureWalletRecord(normalized);
+    if (record.balance < amount) return res.status(400).json({ error: "insufficient balance" });
+    const txHash = String(req.body?.txHash || "");
+    const existing = record.ledger?.find((entry) => entry.txHash && entry.txHash === txHash);
+    if (txHash && existing) return res.status(400).json({ error: "withdrawal already recorded" });
+    addLedgerEntry(normalized, { type: "withdrawal", amount: -amount, txHash: txHash || null });
+    blackjackState.seats.forEach((seat) => {
+      if (seat.joined && seat.walletAddress === normalized) {
+        seat.bankroll = Number(record.balance || 0);
+      }
+    });
+    persistBlackjackUpdates();
+    res.json({ ok: true, wallet: record });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
   }
 });
 
@@ -658,6 +836,22 @@ app.post("/api/settle/:masterpieceId", async (req, res) => {
     res.status(500).json({ error: String(e) });
   }
 });
+
+setInterval(() => {
+  let changed = false;
+  const now = Date.now();
+  if (blackjackState.phase === "player" && blackjackState.turnExpiresAt && now >= blackjackState.turnExpiresAt) {
+    const result = timeoutStand(blackjackState);
+    if (result.ok) changed = true;
+  }
+  if (blackjackState.phase === "idle" || blackjackState.phase === "settled") {
+    if (queueNextRoundIfNeeded()) changed = true;
+    if (tryStartNextRound()) changed = true;
+  }
+  if (changed) {
+    persistBlackjackUpdates();
+  }
+}, 1000);
 
 // ---- Serve built frontend when available ----
 const distDir = path.join(__dirname, "..", "dist");
