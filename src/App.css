@@ -164,6 +164,68 @@ select {
   text-align: right;
 }
 
+.odds-controls {
+  margin-top: 16px;
+  align-items: flex-end;
+}
+
+.odds-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 22px;
+}
+
+.odds-summary {
+  background: #f8fafc;
+  border-radius: 16px;
+  padding: 14px 16px;
+  border: 1px solid #e2e8f0;
+}
+
+.odds-summary .title {
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+.odds-table .table-header,
+.odds-table .table-row {
+  grid-template-columns: 1.6fr 120px 120px 120px 120px 120px 120px;
+}
+
+.tier-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.tier-badge.veteran {
+  background: rgba(16, 185, 129, 0.15);
+  color: #047857;
+}
+
+.tier-badge.mid-level {
+  background: rgba(59, 130, 246, 0.15);
+  color: #1d4ed8;
+}
+
+.tier-badge.low-level {
+  background: rgba(248, 113, 113, 0.15);
+  color: #b91c1c;
+}
+
+.tier-badge.new {
+  background: rgba(148, 163, 184, 0.2);
+  color: #475569;
+}
+
 .section-title {
   font-size: 18px;
   font-weight: 700;
@@ -381,6 +443,11 @@ select {
   .positions-table .table-row {
     grid-template-columns: 120px 100px 1.4fr 70px 110px 90px 90px 130px;
   }
+
+  .odds-table .table-header,
+  .odds-table .table-row {
+    grid-template-columns: 1.6fr 100px 90px 90px 90px 100px 90px;
+  }
 }
 
 @media (max-width: 640px) {
@@ -416,6 +483,16 @@ select {
 
   .positions-table .table-header div:nth-child(n + 4),
   .positions-table .table-row div:nth-child(n + 4) {
+    display: none;
+  }
+
+  .odds-table .table-header,
+  .odds-table .table-row {
+    grid-template-columns: 1fr 90px 80px;
+  }
+
+  .odds-table .table-header div:nth-child(n + 4),
+  .odds-table .table-row div:nth-child(n + 4) {
     display: none;
   }
 }
