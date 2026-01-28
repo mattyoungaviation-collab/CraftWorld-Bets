@@ -112,6 +112,17 @@ function formatOdds(odds: number) {
   return `${odds.toFixed(2)}x`;
 }
 
+function calculateSlidingOdds(appearances: number) {
+  if (appearances < 3) return 1;
+  const minOdds = 0.8;
+  const maxOdds = 5;
+  const maxAppearances = 50;
+  const clampedAppearances = Math.min(Math.max(appearances, 3), maxAppearances);
+  const t = (clampedAppearances - 3) / (maxAppearances - 3);
+  const odds = maxOdds - t * (maxOdds - minOdds);
+  return Math.min(Math.max(odds, minOdds), maxOdds);
+}
+
 function formatPercent(value?: number | null) {
   if (value == null || !Number.isFinite(value)) return "—";
   return `${value.toFixed(1)}%`;
@@ -675,7 +686,6 @@ export default function App() {
     const players = Array.from(map.values());
     if (players.length === 0) return rows;
     const modelProbs = model?.probs ?? {};
-    const modelOddsMap = model?.odds ?? {};
     for (const player of map.values()) {
       const appearances = player.placements.length;
       const avgPlacement =
@@ -684,7 +694,7 @@ export default function App() {
           : 0;
       const probability = modelProbs[player.uid];
       const winChance = Number.isFinite(probability) ? probability * 100 : Number.NaN;
-      const odds = modelOddsMap[player.uid] ?? Number.NaN;
+      const odds = calculateSlidingOdds(appearances);
       const participationPercent = totalEntries > 0 ? (appearances / totalEntries) * 100 : 0;
       const { tier, tierTone } = getTier(participationPercent);
       rows.push({
