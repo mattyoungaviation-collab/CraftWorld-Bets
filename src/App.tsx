@@ -466,19 +466,17 @@ export default function App() {
   }, [allBets, bets, hasLiveBoard, liveLeaderByPosition, mpId, positionSnapshot]);
 
   const oddsByUid = useMemo(() => {
-    const filtered = bets.filter((b) => b.masterpieceId === mpId && b.position === selectedPos);
-    const pot = filtered.reduce((sum, b) => sum + (b.wagerAmount ?? b.amount), 0);
-    const stakeByUid = new Map<string, number>();
-    for (const b of filtered) {
-      if (!b.pickedUid) continue;
-      stakeByUid.set(b.pickedUid, (stakeByUid.get(b.pickedUid) || 0) + (b.wagerAmount ?? b.amount));
-    }
     const odds = new Map<string, number>();
-    for (const [uid, stake] of stakeByUid) {
-      if (stake > 0) odds.set(uid, pot / stake);
+    if (top100.length === 0) return { odds };
+    const leaderRow = top100.find((row) => row.position === selectedPos) ?? top100[0];
+    const leaderPoints = leaderRow?.masterpiecePoints ?? 0;
+    if (leaderPoints <= 0) return { odds };
+    for (const row of top100) {
+      if (row.masterpiecePoints <= 0) continue;
+      odds.set(row.profile.uid, leaderPoints / row.masterpiecePoints);
     }
-    return { odds, pot };
-  }, [bets, mpId, selectedPos]);
+    return { odds };
+  }, [top100, selectedPos]);
 
   async function connectWallet() {
     setToast("");
@@ -983,7 +981,7 @@ export default function App() {
 
       <section className="card">
         <div className="section-title">Leaderboard (click to bet)</div>
-        <div className="table">
+        <div className="table leaderboard-table">
           <div className="table-header">
             <div>Pos</div>
             <div>Player</div>

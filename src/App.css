@@ -190,6 +190,14 @@ select {
   grid-template-columns: 140px 120px 1.4fr 80px 130px 110px 110px 160px;
 }
 
+.leaderboard-table .table-header div:nth-child(3),
+.leaderboard-table .table-header div:nth-child(4),
+.leaderboard-table .table-row div:nth-child(3),
+.leaderboard-table .table-row div:nth-child(4) {
+  justify-self: end;
+  text-align: right;
+}
+
 .table-header {
   background: #f8fafc;
   font-size: 12px;
