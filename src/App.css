@@ -190,6 +190,11 @@ select {
   grid-template-columns: 140px 120px 1.4fr 80px 130px 110px 110px 160px;
 }
 
+.winners-table .table-header,
+.winners-table .table-row {
+  grid-template-columns: 80px minmax(0, 200px) 160px 120px 120px;
+}
+
 .table-header {
   background: #f8fafc;
   font-size: 12px;

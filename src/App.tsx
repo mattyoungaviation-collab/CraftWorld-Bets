@@ -421,7 +421,7 @@ export default function App() {
   }, [allBets, bets]);
 
   const liveWinners = useMemo(() => {
-    if (!hasLiveBoard) return [];
+    if (!hasLiveBoard || !bettingClosed) return [];
     const source = allBets.length > 0 ? allBets : bets;
     const winners: Array<{
       id: string;
@@ -463,7 +463,7 @@ export default function App() {
 
     winners.sort((a, b) => a.position - b.position || b.payout - a.payout);
     return winners;
-  }, [allBets, bets, hasLiveBoard, liveLeaderByPosition, mpId, positionSnapshot]);
+  }, [allBets, bets, bettingClosed, hasLiveBoard, liveLeaderByPosition, mpId, positionSnapshot]);
 
   const chanceByUid = useMemo(() => {
     const chances = new Map<string, number>();
@@ -1187,7 +1187,7 @@ export default function App() {
         </div>
         {!hasLiveBoard && <div className="empty">No live leaderboard data available yet.</div>}
         {hasLiveBoard && (
-          <div className="table" style={{ marginTop: 12 }}>
+          <div className="table winners-table" style={{ marginTop: 12 }}>
             <div className="table-header">
               <div className="cell-center">Pos</div>
               <div>Leader</div>
@@ -1195,23 +1195,27 @@ export default function App() {
               <div className="numeric">Size</div>
               <div className="numeric">Payout</div>
             </div>
-            {liveWinners.length === 0 && (
+            {!bettingClosed && (
+              <div className="empty">Winners will appear once the masterpiece is complete.</div>
+            )}
+            {bettingClosed && liveWinners.length === 0 && (
               <div className="empty">No winners yet for the current live leaderboard.</div>
             )}
-            {liveWinners.map((winner) => (
-              <div className="table-row static" key={winner.id}>
-                <div className="cell-center">#{winner.position}</div>
-                <div>{winner.leader}</div>
-                <div>{winner.recipient}</div>
-                <div className="numeric">
-                  {fmt(winner.wager)} {COIN_SYMBOL}
+            {bettingClosed &&
+              liveWinners.map((winner) => (
+                <div className="table-row static" key={winner.id}>
+                  <div className="cell-center">#{winner.position}</div>
+                  <div>{winner.leader}</div>
+                  <div>{winner.recipient}</div>
+                  <div className="numeric">
+                    {fmt(winner.wager)} {COIN_SYMBOL}
+                  </div>
+                  <div className="numeric">
+                    {fmt(winner.payout)} {COIN_SYMBOL}
+                    <div className="subtle">{formatUsd((coinPrice || 0) * winner.payout)}</div>
+                  </div>
                 </div>
-                <div className="numeric">
-                  {fmt(winner.payout)} {COIN_SYMBOL}
-                  <div className="subtle">{formatUsd((coinPrice || 0) * winner.payout)}</div>
-                </div>
-              </div>
-            ))}
+              ))}
           </div>
         )}
       </section>
