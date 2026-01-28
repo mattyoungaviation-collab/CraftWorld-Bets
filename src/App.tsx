@@ -53,6 +53,7 @@ type OddsRow = {
   avatarUrl?: string | null;
   appearances: number;
   avgPlacement: number;
+  winProbability?: number;
   winChance: number;
   odds: number;
   tier: string;
@@ -668,6 +669,7 @@ export default function App() {
         avatarUrl: player.avatarUrl,
         appearances,
         avgPlacement,
+        winProbability: Number.isFinite(probability) ? probability : undefined,
         winChance,
         odds,
         tier,
