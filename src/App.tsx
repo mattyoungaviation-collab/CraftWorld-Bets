@@ -987,8 +987,8 @@ export default function App() {
           <div className="table-header">
             <div className="cell-center">Pos</div>
             <div>Player</div>
-            <div className="cell-right">Points</div>
-            <div className="cell-right">Odds</div>
+            <div className="numeric">Points</div>
+            <div className="numeric">Odds</div>
             <div></div>
           </div>
 
@@ -1043,8 +1043,8 @@ export default function App() {
             <div>Time</div>
             <div>User</div>
             <div>Pick</div>
-            <div className="cell-center">Pos</div>
-            <div className="cell-right">Wager</div>
+            <div>Pos</div>
+            <div className="numeric">Wager</div>
           </div>
           {bets.length === 0 && <div className="empty">No bets yet.</div>}
           {bets.map((bet) => {
@@ -1104,11 +1104,11 @@ export default function App() {
               <div>Time</div>
               <div className="cell-center">Masterpiece</div>
               <div>Pick</div>
-              <div className="cell-center">Pos</div>
-              <div className="cell-right">Bet Cost</div>
-              <div className="cell-right">Size</div>
-              <div className="cell-right">Fees</div>
-              <div className="cell-right">Live Value</div>
+              <div>Pos</div>
+              <div className="numeric">Bet Cost</div>
+              <div className="numeric">Size</div>
+              <div className="numeric">Fees</div>
+              <div className="numeric">Live Value</div>
             </div>
             {walletBets.length === 0 && <div className="empty">No bets found for this wallet.</div>}
             {walletBets.map((bet) => {
@@ -1181,8 +1181,8 @@ export default function App() {
               <div className="cell-center">Pos</div>
               <div>Leader</div>
               <div>Recipient</div>
-              <div className="cell-right">Size</div>
-              <div className="cell-right">Payout</div>
+              <div className="numeric">Size</div>
+              <div className="numeric">Payout</div>
             </div>
             {liveWinners.length === 0 && (
               <div className="empty">No winners yet for the current live leaderboard.</div>

@@ -235,6 +235,10 @@ select {
   text-align: right;
 }
 
+.table-header .numeric {
+  text-align: right;
+}
+
 .pos {
   font-weight: 700;
 }
