@@ -66,7 +66,7 @@ const input = {
     },
     outputSelection: {
       "*": {
-        "*": ["abi", "evm.bytecode.object"],
+        "*": ["abi", "evm.bytecode.object", "metadata"],
       },
     },
   },
@@ -82,7 +82,7 @@ if (fatalErrors.length > 0) {
 }
 
 const contractOutput = output.contracts?.["BetPaymentRouter.sol"]?.BetPaymentRouter;
-if (!contractOutput?.abi || !contractOutput?.evm?.bytecode?.object) {
+if (!contractOutput?.abi || !contractOutput?.evm?.bytecode?.object || !contractOutput?.metadata) {
   throw new Error("Failed to compile BetPaymentRouter.sol");
 }
 
@@ -116,6 +116,8 @@ const outputPayload = {
 };
 
 fs.writeFileSync("router-deployment.json", `${JSON.stringify(outputPayload, null, 2)}\n`);
+fs.writeFileSync("BetPaymentRouter.metadata.json", `${contractOutput.metadata}\n`);
 
 console.log(`BetPaymentRouter deployed to ${address}`);
 console.log("Saved deployment metadata to router-deployment.json");
+console.log("Saved compiler metadata to BetPaymentRouter.metadata.json");

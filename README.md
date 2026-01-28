@@ -96,6 +96,9 @@ npm run deploy:router
 The deployment script compiles `contracts/BetPaymentRouter.sol`, deploys it to Ronin, and writes a `router-deployment.json`
 file containing the deployed address and configuration.
 
+It also writes `BetPaymentRouter.metadata.json`, which contains the Solidity compiler metadata required by some
+verification flows.
+
 ### Verifying the router on Ronin
 
 To make the contract readable on the Ronin explorer, verify it after deployment:
@@ -105,6 +108,7 @@ To make the contract readable on the Ronin explorer, verify it after deployment:
    - **Compiler version:** from `router-deployment.json` (`compilerVersion`).
    - **Optimizer:** enabled, runs `200`.
    - **Constructor args:** `feeRecipient`, `escrowRecipient`, `feeBps` (in that order).
-3. Paste the source from `contracts/BetPaymentRouter.sol`.
+3. Upload the Solidity source from `contracts/BetPaymentRouter.sol`.
+4. If the explorer asks for metadata, upload `BetPaymentRouter.metadata.json`.
 
 Once verified, the explorer will show the full source and ABI for anyone to read.
