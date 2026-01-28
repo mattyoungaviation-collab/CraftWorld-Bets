@@ -16,6 +16,30 @@
   gap: 20px;
 }
 
+.tabs {
+  display: flex;
+  gap: 12px;
+  padding: 6px;
+  background: #e2e8f0;
+  border-radius: 999px;
+  width: fit-content;
+}
+
+.tab {
+  padding: 8px 16px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  font-weight: 600;
+  cursor: pointer;
+  color: #475569;
+}
+
+.tab.active {
+  background: #0f172a;
+  color: #f8fafc;
+}
+
 .header {
   display: flex;
   justify-content: space-between;
@@ -300,6 +324,11 @@ select {
   display: flex;
   gap: 12px;
   align-items: center;
+}
+
+.odds-meta .title {
+  font-size: 16px;
+  font-weight: 700;
 }
 
 .odds-table .table-header,

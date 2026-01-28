@@ -58,6 +58,13 @@ type OddsRow = {
   tierTone: "elite" | "mid" | "low" | "new";
 };
 
+type OddsHistory = {
+  startId: number;
+  endId: number;
+  updatedAt: string;
+  masterpieces: Masterpiece[];
+};
+
 const COIN_SYMBOL = "$COIN";
 const COIN_CONTRACT = "0x7DC167E270D5EF683CEAF4AFCDF2EFBDD667A9A7";
 const ERC20_BALANCE_OF = "0x70a08231";
@@ -161,10 +168,11 @@ export default function App() {
   const [coinPrice, setCoinPrice] = useState<number | null>(null);
   const [coinDecimals, setCoinDecimals] = useState<number>(18);
   const [coinBalance, setCoinBalance] = useState<bigint | null>(null);
+  const [activeTab, setActiveTab] = useState<"betting" | "odds">("betting");
   const [oddsRows, setOddsRows] = useState<OddsRow[]>([]);
   const [oddsLoading, setOddsLoading] = useState(false);
   const [oddsError, setOddsError] = useState("");
-  const [historyDepth, setHistoryDepth] = useState(20);
+  const [oddsHistory, setOddsHistory] = useState<OddsHistory | null>(null);
   const [pendingBet, setPendingBet] = useState<{
     type: "live" | "future";
     pickedUid: string;
@@ -328,6 +336,12 @@ export default function App() {
   useEffect(() => {
     loadBets(mpId);
   }, [mpId]);
+
+  useEffect(() => {
+    if (activeTab === "odds" && oddsRows.length === 0 && !oddsLoading) {
+      loadOddsHistory();
+    }
+  }, [activeTab, oddsLoading, oddsRows.length]);
 
   useEffect(() => {
     if (!wallet || !walletProvider) return;
@@ -599,24 +613,45 @@ export default function App() {
     setOddsLoading(true);
     setOddsError("");
     try {
-      const depth = Math.max(1, Math.floor(historyDepth));
-      const startId = Math.max(1, mpId - depth + 1);
-      const history: Masterpiece[] = [];
-
-      for (let id = startId; id <= mpId; id += 1) {
-        try {
-          const m = await fetchMasterpiece(id);
-          if (m) history.push(m);
-        } catch (e) {
-          console.error("Failed to load masterpiece", id, e);
-        }
+      const endId = mp?.id ? Number(mp.id) : mpId;
+      const r = await fetch(`/api/odds/history?endId=${endId}`);
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || "Unable to load odds history");
+      const history = j?.data as OddsHistory | undefined;
+      if (!history || !Array.isArray(history.masterpieces)) {
+        throw new Error("No odds history data returned");
       }
-
-      const rows = buildOddsRows(history);
+      const rows = buildOddsRows(history.masterpieces);
       if (rows.length === 0) {
         setOddsError("No placement data available for the selected masterpiece range.");
       }
       setOddsRows(rows);
+      setOddsHistory(history);
+    } catch (e: any) {
+      setOddsError(e?.message || String(e));
+    } finally {
+      setOddsLoading(false);
+    }
+  }
+
+  async function refreshOddsHistory() {
+    setOddsLoading(true);
+    setOddsError("");
+    try {
+      const endId = mp?.id ? Number(mp.id) : mpId;
+      const r = await fetch(`/api/odds/history?endId=${endId}&refresh=true`);
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || "Unable to refresh odds history");
+      const history = j?.data as OddsHistory | undefined;
+      if (!history || !Array.isArray(history.masterpieces)) {
+        throw new Error("No odds history data returned");
+      }
+      const rows = buildOddsRows(history.masterpieces);
+      if (rows.length === 0) {
+        setOddsError("No placement data available for the selected masterpiece range.");
+      }
+      setOddsRows(rows);
+      setOddsHistory(history);
     } catch (e: any) {
       setOddsError(e?.message || String(e));
     } finally {
@@ -976,85 +1011,99 @@ export default function App() {
         </div>
       </header>
 
-      <section className="card">
-        <div className="grid-4">
-          <div>
-            <label>Username (user-created)</label>
-            <input
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder="e.g. MattTheBookie"
-            />
-          </div>
+      <div className="tabs">
+        <button
+          className={`tab ${activeTab === "betting" ? "active" : ""}`}
+          onClick={() => setActiveTab("betting")}
+        >
+          Betting Desk
+        </button>
+        <button className={`tab ${activeTab === "odds" ? "active" : ""}`} onClick={() => setActiveTab("odds")}>
+          Sports Odds
+        </button>
+      </div>
 
-          <div>
-            <label>Masterpiece ID</label>
-            <input type="number" value={mpId} onChange={(e) => setMpId(Number(e.target.value))} />
-          </div>
-
-          <div>
-            <label>Bet Position</label>
-            <select value={selectedPos} onChange={(e) => setSelectedPos(Number(e.target.value) as 1 | 2 | 3)}>
-              <option value={1}>#1</option>
-              <option value={2}>#2</option>
-              <option value={3}>#3</option>
-            </select>
-          </div>
-
-          <div>
-            <label>Amount ({COIN_SYMBOL})</label>
-            <input type="number" value={amount} onChange={(e) => setAmount(Number(e.target.value))} />
-            <div className="subtle" style={{ marginTop: 6 }}>
-              {fmt(wagerAmount)} {COIN_SYMBOL} wager + {fmt(feeAmount)} {COIN_SYMBOL} fee (5%)
+      {activeTab === "betting" && (
+        <section className="card">
+          <div className="grid-4">
+            <div>
+              <label>Username (user-created)</label>
+              <input
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="e.g. MattTheBookie"
+              />
             </div>
-            {!hasEscrowAddress && (
+
+            <div>
+              <label>Masterpiece ID</label>
+              <input type="number" value={mpId} onChange={(e) => setMpId(Number(e.target.value))} />
+            </div>
+
+            <div>
+              <label>Bet Position</label>
+              <select value={selectedPos} onChange={(e) => setSelectedPos(Number(e.target.value) as 1 | 2 | 3)}>
+                <option value={1}>#1</option>
+                <option value={2}>#2</option>
+                <option value={3}>#3</option>
+              </select>
+            </div>
+
+            <div>
+              <label>Amount ({COIN_SYMBOL})</label>
+              <input type="number" value={amount} onChange={(e) => setAmount(Number(e.target.value))} />
               <div className="subtle" style={{ marginTop: 6 }}>
-                Set <strong>VITE_BET_ESCROW_ADDRESS</strong> (a 0x wallet address) to route wagers to escrow.
+                {fmt(wagerAmount)} {COIN_SYMBOL} wager + {fmt(feeAmount)} {COIN_SYMBOL} fee (5%)
               </div>
-            )}
-            {hasEscrowAddress && !escrowAddressValid && (
-              <div className="subtle" style={{ marginTop: 6 }}>
-                Escrow address must be a valid 0x wallet address.
-              </div>
-            )}
+              {!hasEscrowAddress && (
+                <div className="subtle" style={{ marginTop: 6 }}>
+                  Set <strong>VITE_BET_ESCROW_ADDRESS</strong> (a 0x wallet address) to route wagers to escrow.
+                </div>
+              )}
+              {hasEscrowAddress && !escrowAddressValid && (
+                <div className="subtle" style={{ marginTop: 6 }}>
+                  Escrow address must be a valid 0x wallet address.
+                </div>
+              )}
+            </div>
           </div>
-        </div>
 
-        <div className="actions">
-          <button className="btn" onClick={() => loadCurrentMasterpiece(mpId)} disabled={loading}>
-            {loading ? "Refreshing..." : "Refresh Leaderboard"}
-          </button>
-          <button className="btn btn-primary" onClick={() => setFutureMode(true)}>
-            Future Masterpiece Bet
-          </button>
-          <div className="status-pill">
-            <span>Status</span>
-            <strong>
-              {bettingClosed
-                ? "Betting Closed"
-                : hasLiveBoard
-                ? "Live"
-                : futureMode
-                ? "Future"
-                : "Awaiting Leaderboard"}
-            </strong>
+          <div className="actions">
+            <button className="btn" onClick={() => loadCurrentMasterpiece(mpId)} disabled={loading}>
+              {loading ? "Refreshing..." : "Refresh Leaderboard"}
+            </button>
+            <button className="btn btn-primary" onClick={() => setFutureMode(true)}>
+              Future Masterpiece Bet
+            </button>
+            <div className="status-pill">
+              <span>Status</span>
+              <strong>
+                {bettingClosed
+                  ? "Betting Closed"
+                  : hasLiveBoard
+                  ? "Live"
+                  : futureMode
+                  ? "Future"
+                  : "Awaiting Leaderboard"}
+              </strong>
+            </div>
+            <div className="status-pill">
+              <span>Pot ({COIN_SYMBOL})</span>
+              <strong>
+                {fmt(potForSelected)} ({formatUsd((coinPrice || 0) * potForSelected)})
+              </strong>
+            </div>
           </div>
-          <div className="status-pill">
-            <span>Pot ({COIN_SYMBOL})</span>
-            <strong>
-              {fmt(potForSelected)} ({formatUsd((coinPrice || 0) * potForSelected)})
-            </strong>
-          </div>
-        </div>
 
-        {toast && <div className="toast">{toast}</div>}
+          {toast && <div className="toast">{toast}</div>}
 
-        {err && (
-          <div className="toast toast-error">
-            <b>Error:</b> {err}
-          </div>
-        )}
-      </section>
+          {err && (
+            <div className="toast toast-error">
+              <b>Error:</b> {err}
+            </div>
+          )}
+        </section>
+      )}
 
       <section className="card summary-card">
         <div>
@@ -1077,125 +1126,137 @@ export default function App() {
         </div>
       </section>
 
-      <section className="card odds-card">
-        <div className="section-title">Player Odds Board</div>
-        <div className="subtle">
-          Sportsbook-style odds based on top-3 placements from the last {historyDepth} masterpieces. Players with fewer
-          than 3 placements are listed at even odds.
-        </div>
-        <div className="odds-controls">
-          <div>
-            <label>Masterpieces analyzed</label>
-            <input
-              type="number"
-              min={1}
-              value={historyDepth}
-              onChange={(e) => setHistoryDepth(Number(e.target.value))}
-            />
+      {activeTab === "odds" && (
+        <section className="card odds-card">
+          <div className="section-title">Player Odds Board</div>
+          <div className="subtle">
+            Sportsbook-style odds based on top-3 placements from masterpiece #1 through #{oddsHistory?.endId ?? mpId}.
+            Players with fewer than 3 placements are listed at even odds.
           </div>
-          <div className="odds-actions">
-            <button className="btn" onClick={loadOddsHistory} disabled={oddsLoading}>
-              {oddsLoading ? "Loading odds..." : "Generate Odds"}
-            </button>
+          <div className="odds-controls">
+            <div className="odds-meta">
+              <div className="label">History range</div>
+              <div className="title">
+                {oddsHistory ? `#${oddsHistory.startId} → #${oddsHistory.endId}` : "Not loaded"}
+              </div>
+              <div className="subtle">
+                {oddsHistory
+                  ? `Cached ${new Date(oddsHistory.updatedAt).toLocaleString()}`
+                  : "Load the full history to build odds."}
+              </div>
+            </div>
+            <div className="odds-actions">
+              <button className="btn" onClick={loadOddsHistory} disabled={oddsLoading}>
+                {oddsLoading ? "Loading odds..." : "Load Odds"}
+              </button>
+              <button className="btn btn-primary" onClick={refreshOddsHistory} disabled={oddsLoading}>
+                Rebuild History
+              </button>
+            </div>
           </div>
-        </div>
 
-        {oddsError && (
-          <div className="toast toast-error">
-            <b>Error:</b> {oddsError}
-          </div>
-        )}
-
-        <div className="table odds-table">
-          <div className="table-header">
-            <div>Player</div>
-            <div className="numeric">Placements</div>
-            <div className="numeric">Avg Place</div>
-            <div className="numeric">Odds</div>
-            <div className="cell-center">Tier</div>
-          </div>
-          {oddsRows.length === 0 && !oddsLoading && (
-            <div className="empty">Generate odds to see veteran, mid-level, low-level, and new players.</div>
+          {oddsError && (
+            <div className="toast toast-error">
+              <b>Error:</b> {oddsError}
+            </div>
           )}
-          {oddsRows.map((row) => (
-            <div className="table-row static" key={row.uid}>
-              <div className="player">
-                {row.avatarUrl ? (
-                  <img
-                    src={row.avatarUrl}
-                    alt=""
-                    className="avatar"
-                    onError={(e) => ((e.currentTarget.style.display = "none"))}
-                  />
-                ) : (
-                  <div className="avatar placeholder" />
-                )}
-                <div>
-                  <div className="name">{row.name}</div>
-                  <div className="subtle">{row.uid}</div>
+
+          <div className="table odds-table">
+            <div className="table-header">
+              <div>Player</div>
+              <div className="numeric">Placements</div>
+              <div className="numeric">Avg Place</div>
+              <div className="numeric">Odds</div>
+              <div className="cell-center">Tier</div>
+            </div>
+            {oddsRows.length === 0 && !oddsLoading && (
+              <div className="empty">Load the history to see veteran, mid-level, low-level, and new players.</div>
+            )}
+            {oddsRows.map((row) => (
+              <div className="table-row static" key={row.uid}>
+                <div className="player">
+                  {row.avatarUrl ? (
+                    <img
+                      src={row.avatarUrl}
+                      alt=""
+                      className="avatar"
+                      onError={(e) => ((e.currentTarget.style.display = "none"))}
+                    />
+                  ) : (
+                    <div className="avatar placeholder" />
+                  )}
+                  <div>
+                    <div className="name">{row.name}</div>
+                    <div className="subtle">{row.uid}</div>
+                  </div>
+                </div>
+                <div className="numeric">{row.appearances}</div>
+                <div className="numeric">{row.avgPlacement ? row.avgPlacement.toFixed(2) : "—"}</div>
+                <div className="numeric">
+                  {formatOdds(row.odds)}
+                  {row.appearances < 3 && <div className="subtle">Even odds</div>}
+                </div>
+                <div className="cell-center">
+                  <span className={`tier-pill tier-${row.tierTone}`}>{row.tier}</span>
                 </div>
               </div>
-              <div className="numeric">{row.appearances}</div>
-              <div className="numeric">{row.avgPlacement ? row.avgPlacement.toFixed(2) : "—"}</div>
-              <div className="numeric">
-                {formatOdds(row.odds)}
-                {row.appearances < 3 && <div className="subtle">Even odds</div>}
-              </div>
-              <div className="cell-center">
-                <span className={`tier-pill tier-${row.tierTone}`}>{row.tier}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="card">
-        <div className="section-title">Betting Terms</div>
-        <ul className="terms-list">
-          <li>
-            All bets are final once confirmed on-chain. No refunds, chargebacks, or reversals are possible after you
-            sign the transaction.
-          </li>
-          <li>
-            A 5% service fee is deducted from each bet for server support and operations. The fee is sent to{" "}
-            <strong>{SERVICE_FEE_ADDRESS}</strong> on Ronin.
-          </li>
-          <li>
-            Winners are paid back in {COIN_SYMBOL} to the same wallet address that placed the bet, after the
-            masterpiece completes and results are verified.
-          </li>
-          <li>
-            Wagers are escrowed to <strong>{escrowAddress || "an escrow wallet"}</strong> on Ronin to fund payouts.
-          </li>
-          <li>
-            Betting is for entertainment only and does not constitute investment advice. CraftWorld Bets is not
-            responsible for losses from price volatility, failed transactions, or incorrect wallet addresses.
-          </li>
-        </ul>
-      </section>
-
-      {futureMode && (
-        <section className="card">
-          <div className="section-title">Future Masterpiece Bet</div>
-          <div className="subtle">
-            Pre-bet on the next masterpiece. Enter the player UID or name you expect to finish in position #{selectedPos}.
-          </div>
-          <div className="grid-2" style={{ marginTop: 12 }}>
-            <div>
-              <label>Predicted player UID or name</label>
-              <input value={futurePick} onChange={(e) => setFuturePick(e.target.value)} placeholder="UID or name" />
-            </div>
-            <div className="future-actions">
-              <button className="btn" onClick={() => setFutureMode(false)}>
-                Back to Live Betting
-              </button>
-              <button className="btn btn-primary" onClick={openFutureBetConfirm} disabled={placing}>
-                {placing ? "Placing..." : "Confirm Future Bet"}
-              </button>
-            </div>
+            ))}
           </div>
         </section>
       )}
+
+      {activeTab === "betting" && (
+        <section className="card">
+          <div className="section-title">Betting Terms</div>
+          <ul className="terms-list">
+            <li>
+              All bets are final once confirmed on-chain. No refunds, chargebacks, or reversals are possible after you
+              sign the transaction.
+            </li>
+            <li>
+              A 5% service fee is deducted from each bet for server support and operations. The fee is sent to{" "}
+              <strong>{SERVICE_FEE_ADDRESS}</strong> on Ronin.
+            </li>
+            <li>
+              Winners are paid back in {COIN_SYMBOL} to the same wallet address that placed the bet, after the
+              masterpiece completes and results are verified.
+            </li>
+            <li>
+              Wagers are escrowed to <strong>{escrowAddress || "an escrow wallet"}</strong> on Ronin to fund payouts.
+            </li>
+            <li>
+              Betting is for entertainment only and does not constitute investment advice. CraftWorld Bets is not
+              responsible for losses from price volatility, failed transactions, or incorrect wallet addresses.
+            </li>
+          </ul>
+        </section>
+      )}
+
+      {activeTab === "betting" && (
+        <>
+          {futureMode && (
+            <section className="card">
+              <div className="section-title">Future Masterpiece Bet</div>
+              <div className="subtle">
+                Pre-bet on the next masterpiece. Enter the player UID or name you expect to finish in position #
+                {selectedPos}.
+              </div>
+              <div className="grid-2" style={{ marginTop: 12 }}>
+                <div>
+                  <label>Predicted player UID or name</label>
+                  <input value={futurePick} onChange={(e) => setFuturePick(e.target.value)} placeholder="UID or name" />
+                </div>
+                <div className="future-actions">
+                  <button className="btn" onClick={() => setFutureMode(false)}>
+                    Back to Live Betting
+                  </button>
+                  <button className="btn btn-primary" onClick={openFutureBetConfirm} disabled={placing}>
+                    {placing ? "Placing..." : "Confirm Future Bet"}
+                  </button>
+                </div>
+              </div>
+            </section>
+          )}
 
       <section className="card">
         <div className="section-title">Leaderboard (click to bet)</div>
@@ -1389,6 +1450,8 @@ export default function App() {
           </div>
         )}
       </section>
+        </>
+      )}
 
       {pendingBet && (
         <div className="modal-backdrop">
