@@ -987,8 +987,8 @@ export default function App() {
           <div className="table-header">
             <div>Pos</div>
             <div>Player</div>
-            <div>Points</div>
-            <div>Odds</div>
+            <div className="numeric">Points</div>
+            <div className="numeric">Odds</div>
             <div></div>
           </div>
 
@@ -1044,7 +1044,7 @@ export default function App() {
             <div>User</div>
             <div>Pick</div>
             <div>Pos</div>
-            <div>Wager</div>
+            <div className="numeric">Wager</div>
           </div>
           {bets.length === 0 && <div className="empty">No bets yet.</div>}
           {bets.map((bet) => {
@@ -1105,10 +1105,10 @@ export default function App() {
               <div>Masterpiece</div>
               <div>Pick</div>
               <div>Pos</div>
-              <div>Bet Cost</div>
-              <div>Size</div>
-              <div>Fees</div>
-              <div>Live Value</div>
+              <div className="numeric">Bet Cost</div>
+              <div className="numeric">Size</div>
+              <div className="numeric">Fees</div>
+              <div className="numeric">Live Value</div>
             </div>
             {walletBets.length === 0 && <div className="empty">No bets found for this wallet.</div>}
             {walletBets.map((bet) => {
@@ -1181,8 +1181,8 @@ export default function App() {
               <div>Pos</div>
               <div>Leader</div>
               <div>Recipient</div>
-              <div>Size</div>
-              <div>Payout</div>
+              <div className="numeric">Size</div>
+              <div className="numeric">Payout</div>
             </div>
             {liveWinners.length === 0 && (
               <div className="empty">No winners yet for the current live leaderboard.</div>
