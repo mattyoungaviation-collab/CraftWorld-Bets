@@ -42,6 +42,7 @@ function createSeat(index) {
     walletAddress: null,
     bankroll: 0,
     bet: BLACKJACK_MIN_BET,
+    readyForNextRound: false,
     hands: [],
     handStatuses: [],
     handSplits: [],
@@ -187,7 +188,9 @@ function resolveDealerAndPayout(state) {
   const dealerHasBlackjack = isBlackjack(nextDealer);
 
   state.seats = state.seats.map((seat) => {
-    if (!seat.joined || seat.status === "waiting" || seat.status === "empty") return seat;
+    if (!seat.joined || seat.status === "waiting" || seat.status === "empty") {
+      return seat.joined ? { ...seat, readyForNextRound: false } : seat;
+    }
     let payoutTotal = 0;
     const outcomes = [];
 
@@ -235,6 +238,7 @@ function resolveDealerAndPayout(state) {
       lastOutcomes: outcomes,
       lastPayout: payoutTotal,
       handStatuses: seat.handStatuses.map(() => "done"),
+      readyForNextRound: false,
     };
   });
 
@@ -286,6 +290,8 @@ export function loadBlackjackState(filePath) {
     const normalizedSeats = seats.map((seat, index) => ({
       ...createSeat(index),
       ...seat,
+      readyForNextRound:
+        typeof seat.readyForNextRound === "boolean" ? seat.readyForNextRound : Boolean(seat.joined),
       hands: Array.isArray(seat.hands) ? seat.hands : [],
       handStatuses: Array.isArray(seat.handStatuses) ? seat.handStatuses : [],
       handSplits: Array.isArray(seat.handSplits) ? seat.handSplits : [],
@@ -333,6 +339,7 @@ export function joinSeat(state, seatId, name = "", walletAddress = null, bankrol
   seat.activeHand = 0;
   seat.lastOutcomes = [];
   seat.lastPayout = 0;
+  seat.readyForNextRound = true;
   seat.name = name || seat.name || "Player";
   seat.walletAddress = walletAddress || seat.walletAddress || null;
   if (bankrollOverride !== null && Number.isFinite(bankrollOverride)) {
@@ -373,6 +380,9 @@ export function updateSeat(state, seatId, updates) {
     if (!Number.isFinite(bet) || bet < BLACKJACK_MIN_BET) return { error: "Invalid bet" };
     seat.bet = Math.min(bet, seat.bankroll);
   }
+  if (updates.readyForNextRound !== undefined) {
+    seat.readyForNextRound = Boolean(updates.readyForNextRound);
+  }
   touch(state);
   return { ok: true };
 }
@@ -388,6 +398,17 @@ export function shuffleShoe(state) {
 }
 
 export function startRound(state) {
+  const removedSeats = [];
+  state.seats = state.seats.map((seat) => {
+    if (seat.joined && !seat.readyForNextRound) {
+      removedSeats.push(seat.id);
+      return createSeat(seat.id);
+    }
+    return seat;
+  });
+  removedSeats.forEach((seatId) => {
+    appendLog(state, `Seat ${seatId + 1} left after skipping the next-round prompt.`);
+  });
   const activeSeats = state.seats.filter((seat) => seat.joined);
   if (activeSeats.length === 0) {
     appendLog(state, "No players seated. Join a seat to start a round.");
@@ -613,6 +634,7 @@ export function resetRound(state) {
           bet: Math.max(BLACKJACK_MIN_BET, seat.bet),
           lastOutcomes: [],
           lastPayout: 0,
+          readyForNextRound: true,
         }
       : seat
   );
