@@ -91,13 +91,19 @@ type SeatStatus = "empty" | "waiting" | "playing" | "stood" | "busted" | "blackj
 type BlackjackSeat = {
   id: number;
   name: string;
+  walletAddress?: string | null;
   bankroll: number;
   bet: number;
-  hand: Card[];
+  hands: Card[][];
+  handStatuses: SeatStatus[];
+  handSplits: boolean[];
+  bets: number[];
+  activeHand: number;
   status: SeatStatus;
   pendingLeave: boolean;
   joined: boolean;
-  lastOutcome?: "win" | "lose" | "push" | "blackjack";
+  lastOutcomes?: Array<"win" | "lose" | "push" | "blackjack">;
+  lastPayout?: number;
 };
 
 type BlackjackState = {
@@ -106,6 +112,9 @@ type BlackjackState = {
   shoe: Card[];
   phase: "idle" | "player" | "dealer" | "settled";
   activeSeat: number | null;
+  activeHand: number | null;
+  turnExpiresAt: number | null;
+  cooldownExpiresAt: number | null;
   log: string[];
 };
 
@@ -214,6 +223,12 @@ function isBlackjack(cards: Card[]) {
 function formatHand(cards: Card[]) {
   if (cards.length === 0) return "—";
   return cards.map((card) => `${card.rank}${card.suit}`).join(" · ");
+}
+
+function formatCountdown(ms: number | null) {
+  if (ms === null) return "—";
+  const seconds = Math.max(0, Math.ceil(ms / 1000));
+  return `${seconds}s`;
 }
 
 function basicStrategyDecision(total: number, isSoft: boolean, dealerUpcard: number) {
@@ -388,9 +403,13 @@ export default function App() {
     Array.from({ length: 5 }, (_, index) => ({
       id: index,
       name: "",
-      bankroll: 1000,
+      bankroll: 0,
       bet: BLACKJACK_MIN_BET,
-      hand: [],
+      hands: [],
+      handStatuses: [],
+      handSplits: [],
+      bets: [],
+      activeHand: 0,
       status: "empty",
       pendingLeave: false,
       joined: false,
@@ -400,9 +419,19 @@ export default function App() {
   const [blackjackShoe, setBlackjackShoe] = useState<Card[]>(() => buildShoe());
   const [blackjackPhase, setBlackjackPhase] = useState<"idle" | "player" | "dealer" | "settled">("idle");
   const [blackjackActiveSeat, setBlackjackActiveSeat] = useState<number | null>(null);
+  const [blackjackActiveHand, setBlackjackActiveHand] = useState<number | null>(null);
+  const [blackjackTurnExpiresAt, setBlackjackTurnExpiresAt] = useState<number | null>(null);
+  const [blackjackCooldownExpiresAt, setBlackjackCooldownExpiresAt] = useState<number | null>(null);
   const [blackjackLog, setBlackjackLog] = useState<string[]>([]);
+  const [blackjackNow, setBlackjackNow] = useState(() => Date.now());
   const [coinDecimals, setCoinDecimals] = useState<number>(18);
   const [coinBalance, setCoinBalance] = useState<bigint | null>(null);
+  const [walletLedgerBalance, setWalletLedgerBalance] = useState<number>(0);
+  const [walletLedger, setWalletLedger] = useState<
+    Array<{ id: string; type: string; amount: number; createdAt: string; txHash?: string | null }>
+  >([]);
+  const [depositAmount, setDepositAmount] = useState<number>(0);
+  const [depositing, setDepositing] = useState(false);
   const [activeTab, setActiveTab] = useState<"betting" | "odds" | "blackjack">("betting");
   const [oddsRows, setOddsRows] = useState<OddsRow[]>([]);
   const [oddsLoading, setOddsLoading] = useState(false);
@@ -436,7 +465,11 @@ export default function App() {
   }, [mpId]);
 
   useEffect(() => {
-    if (!wallet) setCoinBalance(null);
+    if (!wallet) {
+      setCoinBalance(null);
+      setWalletLedgerBalance(0);
+      setWalletLedger([]);
+    }
   }, [wallet]);
 
   useEffect(() => {
@@ -461,6 +494,7 @@ export default function App() {
     if (showPositions) {
       refreshWalletPositions(address);
     }
+    loadWalletLedger(address);
   }, [wallet, showPositions]);
 
   function isMasterpieceClosed(masterpiece: Masterpiece) {
@@ -539,6 +573,19 @@ export default function App() {
       const r = await fetch(`/api/wallets/${encodeURIComponent(address)}/bets`);
       const j = await r.json();
       setWalletBets(j?.bets || []);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  async function loadWalletLedger(address: string) {
+    try {
+      const r = await fetch(`/api/wallets/${encodeURIComponent(address)}/ledger`);
+      const j = await r.json();
+      if (!r.ok || j?.ok !== true) return;
+      const walletRecord = j?.wallet;
+      setWalletLedgerBalance(Number(walletRecord?.balance || 0));
+      setWalletLedger(Array.isArray(walletRecord?.ledger) ? walletRecord.ledger : []);
     } catch (e) {
       console.error(e);
     }
@@ -1380,6 +1427,59 @@ export default function App() {
     }
   }
 
+  async function handleDepositToLedger() {
+    if (!wallet) {
+      setToast("Connect your wallet to deposit.");
+      return;
+    }
+    if (!hasEscrowAddress) {
+      setToast("Missing escrow address. Set VITE_BET_ESCROW_ADDRESS to accept deposits.");
+      return;
+    }
+    if (!escrowAddressValid) {
+      setToast("Escrow address is invalid. Use a 0x wallet address for VITE_BET_ESCROW_ADDRESS.");
+      return;
+    }
+    const totalAmount = Math.floor(Number(depositAmount));
+    if (!Number.isFinite(totalAmount) || totalAmount <= 0) {
+      setToast("Deposit amount must be greater than zero.");
+      return;
+    }
+    setDepositing(true);
+    setToast("");
+    try {
+      const rawAmount = BigInt(totalAmount) * BigInt(10) ** BigInt(coinDecimals);
+      setToast("🧾 Please sign the deposit transfer in your wallet.");
+      const escrowTx = await signAndSendTransfer(escrowAddress, rawAmount);
+      setToast("⏳ Waiting for escrow confirmation...");
+      await confirmTransfer(escrowTx, escrowAddress, rawAmount);
+
+      const r = await fetch(`/api/wallets/${encodeURIComponent(wallet)}/deposit`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ amount: totalAmount, txHash: escrowTx }),
+      });
+      const j = await r.json();
+      if (!r.ok || j?.ok !== true) {
+        throw new Error(j?.error || "Deposit failed");
+      }
+      const walletRecord = j?.wallet;
+      setWalletLedgerBalance(Number(walletRecord?.balance || 0));
+      setWalletLedger(Array.isArray(walletRecord?.ledger) ? walletRecord.ledger : []);
+      setDepositAmount(0);
+      setToast(`✅ ${fmt(totalAmount)} ${COIN_SYMBOL} deposited to your in-game balance.`);
+    } catch (e: any) {
+      const message = e?.message || String(e);
+      if (message && message.includes("User rejected")) {
+        setToast("❌ Deposit canceled. No funds were moved.");
+        return;
+      }
+      setToast(`❌ Deposit failed. ${message}`);
+    } finally {
+      setDepositing(false);
+    }
+  }
+
   const dealerTotals = useMemo(() => getHandTotals(blackjackDealer), [blackjackDealer]);
   const blackjackOddsDeck = useMemo(() => {
     if (blackjackPhase === "player") {
@@ -1389,11 +1489,15 @@ export default function App() {
   }, [blackjackShoe, blackjackDealer, blackjackPhase]);
   const blackjackOdds = useMemo(() => {
     const upcard = blackjackDealer[0] || null;
-    return blackjackSeats.map((seat) =>
-      seat.joined && seat.hand.length > 0
-        ? simulateOdds(blackjackOddsDeck, seat.hand, upcard)
-        : { win: 0, push: 0, lose: 0, ev: 0 }
-    );
+    return blackjackSeats.map((seat) => {
+      if (!seat.joined || seat.hands.length === 0) {
+        return { win: 0, push: 0, lose: 0, ev: 0 };
+      }
+      const activeIndex = seat.handStatuses.findIndex((status) => status === "playing");
+      const handIndex = activeIndex >= 0 ? activeIndex : 0;
+      const hand = seat.hands[handIndex] || [];
+      return simulateOdds(blackjackOddsDeck, hand, upcard);
+    });
   }, [blackjackSeats, blackjackDealer, blackjackOddsDeck]);
 
   function applyBlackjackState(state: BlackjackState) {
@@ -1402,6 +1506,9 @@ export default function App() {
     setBlackjackShoe(state.shoe);
     setBlackjackPhase(state.phase);
     setBlackjackActiveSeat(state.activeSeat);
+    setBlackjackActiveHand(state.activeHand ?? null);
+    setBlackjackTurnExpiresAt(state.turnExpiresAt ?? null);
+    setBlackjackCooldownExpiresAt(state.cooldownExpiresAt ?? null);
     setBlackjackLog(state.log || []);
   }
 
@@ -1431,6 +1538,14 @@ export default function App() {
     };
   }, [activeTab]);
 
+  useEffect(() => {
+    if (activeTab !== "blackjack") return;
+    const timer = window.setInterval(() => {
+      setBlackjackNow(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [activeTab]);
+
   async function sendBlackjackAction(endpoint: string, payload?: Record<string, unknown>) {
     try {
       const r = await fetch(endpoint, {
@@ -1454,8 +1569,12 @@ export default function App() {
   }
 
   function joinSeat(id: number) {
+    if (!wallet) {
+      setToast("Connect your wallet to join the blackjack table.");
+      return;
+    }
     const name = username.trim();
-    sendBlackjackAction("/api/blackjack/join", { seatId: id, name: name || undefined });
+    sendBlackjackAction("/api/blackjack/join", { seatId: id, name: name || undefined, walletAddress: wallet });
   }
 
   function leaveSeat(id: number) {
@@ -1482,6 +1601,10 @@ export default function App() {
     sendBlackjackAction("/api/blackjack/double", { seatId });
   }
 
+  function handleSplit(seatId: number) {
+    sendBlackjackAction("/api/blackjack/split", { seatId });
+  }
+
   function resetBlackjackRound() {
     sendBlackjackAction("/api/blackjack/reset");
   }
@@ -1489,6 +1612,14 @@ export default function App() {
   const feeAmount = useMemo(() => Math.floor((amount * SERVICE_FEE_BPS) / 10000), [amount]);
   const wagerAmount = useMemo(() => Math.max(amount - feeAmount, 0), [amount, feeAmount]);
   const totalInUsd = useMemo(() => (coinPrice || 0) * amount, [coinPrice, amount]);
+  const turnCountdownMs = useMemo(
+    () => (blackjackTurnExpiresAt ? blackjackTurnExpiresAt - blackjackNow : null),
+    [blackjackTurnExpiresAt, blackjackNow]
+  );
+  const cooldownCountdownMs = useMemo(
+    () => (blackjackCooldownExpiresAt ? blackjackCooldownExpiresAt - blackjackNow : null),
+    [blackjackCooldownExpiresAt, blackjackNow]
+  );
 
   return (
     <div className="page">
@@ -1513,6 +1644,10 @@ export default function App() {
                 : "Wallet not connected"}
             </strong>
           </div>
+          <div className="price-pill">
+            <div>In-game {COIN_SYMBOL}</div>
+            <strong>{wallet ? fmt(walletLedgerBalance) : "—"}</strong>
+          </div>
           <button
             className="btn btn-primary"
             onClick={handleWalletAction}
@@ -1527,6 +1662,19 @@ export default function App() {
               ? `Disconnect: ${wallet.slice(0, 6)}...${wallet.slice(-4)}`
               : "Connect Wallet"}
           </button>
+          <div className="ledger-actions">
+            <input
+              type="number"
+              min={0}
+              value={depositAmount || ""}
+              onChange={(e) => setDepositAmount(Number(e.target.value))}
+              placeholder={`${COIN_SYMBOL} deposit`}
+              disabled={!wallet}
+            />
+            <button className="btn" onClick={handleDepositToLedger} disabled={!wallet || depositing}>
+              {depositing ? "Depositing..." : "Transfer to escrow"}
+            </button>
+          </div>
           {!walletConnectEnabled && (
             <div className="subtle">Set VITE_WALLETCONNECT_PROJECT_ID in your .env to enable wallet connections.</div>
           )}
@@ -1794,7 +1942,7 @@ export default function App() {
             <div>
               <div className="section-title">Blackjack Table</div>
               <div className="subtle">
-                6-deck shoe · Dealer hits soft 17 · Blackjack pays 3:2 · Double on any two cards · No splits.
+                6-deck shoe · Dealer hits soft 17 · Blackjack pays 3:2 · Double on any two cards · Splits allowed.
               </div>
             </div>
             <div className="blackjack-actions">
@@ -1838,6 +1986,16 @@ export default function App() {
                 {blackjackActiveSeat !== null ? `Seat ${blackjackActiveSeat + 1} to act.` : "Dealer pending."}
               </div>
             </div>
+            <div>
+              <div className="label">Turn Timer</div>
+              <div className="title">{formatCountdown(turnCountdownMs)}</div>
+              <div className="subtle">Auto-stand after 15 seconds.</div>
+            </div>
+            <div>
+              <div className="label">Next Round</div>
+              <div className="title">{formatCountdown(cooldownCountdownMs)}</div>
+              <div className="subtle">30-second betting window before the deal.</div>
+            </div>
           </div>
 
           <div className="dealer-row">
@@ -1864,10 +2022,18 @@ export default function App() {
 
           <div className="blackjack-seats">
             {blackjackSeats.map((seat, index) => {
-              const totals = getHandTotals(seat.hand);
               const odds = blackjackOdds[index];
               const isActive = blackjackActiveSeat === index && blackjackPhase === "player";
-              const canAct = isActive && seat.status === "playing";
+              const activeHandIndex = isActive ? blackjackActiveHand ?? seat.activeHand : seat.activeHand;
+              const activeHand = seat.hands[activeHandIndex] || [];
+              const activeBet = seat.bets[activeHandIndex] ?? seat.bet;
+              const canAct = isActive && seat.handStatuses[activeHandIndex] === "playing";
+              const canSplit =
+                canAct &&
+                seat.hands.length < 2 &&
+                activeHand.length === 2 &&
+                activeHand[0]?.rank === activeHand[1]?.rank &&
+                seat.bankroll >= activeBet;
               return (
                 <div
                   className={`seat-card ${seat.joined ? "occupied" : "open"} ${isActive ? "active" : ""}`}
@@ -1902,14 +2068,10 @@ export default function App() {
                           />
                         </div>
                         <div>
-                          <label>Buy-in</label>
-                          <input
-                            type="number"
-                            min={0}
-                            value={seat.bankroll}
-                            onChange={(e) => updateSeat(seat.id, { bankroll: Number(e.target.value) })}
-                            disabled={blackjackPhase === "player" || blackjackPhase === "dealer"}
-                          />
+                          <label>Balance</label>
+                          <div className="static-field">
+                            {fmt(seat.bankroll)} {COIN_SYMBOL}
+                          </div>
                         </div>
                         <div>
                           <label>Bet</label>
@@ -1924,14 +2086,36 @@ export default function App() {
                       </div>
 
                       <div className="seat-hand">
-                        <div className="seat-hand-cards">{formatHand(seat.hand)}</div>
-                        <div className="subtle">
-                          Total: {seat.hand.length > 0 ? totals.total : "—"} · Status: {seat.status}
-                        </div>
-                        {seat.lastOutcome && (
-                          <div className={`seat-outcome seat-outcome-${seat.lastOutcome}`}>
-                            {seat.lastOutcome.toUpperCase()}
-                          </div>
+                        {seat.hands.length === 0 ? (
+                          <div className="seat-hand-cards">—</div>
+                        ) : (
+                          seat.hands.map((hand, handIndex) => {
+                            const totals = getHandTotals(hand);
+                            const handStatus = seat.handStatuses[handIndex] || "waiting";
+                            const bet = seat.bets[handIndex] ?? seat.bet;
+                            const isActiveHand = isActive && blackjackActiveHand === handIndex;
+                            const outcome = seat.lastOutcomes?.[handIndex];
+                            return (
+                              <div
+                                key={`${seat.id}-${handIndex}`}
+                                className={`seat-hand-row ${isActiveHand ? "active" : ""}`}
+                              >
+                                <div className="seat-hand-cards">{formatHand(hand)}</div>
+                                <div className="subtle">
+                                  Bet: {fmt(bet)} {COIN_SYMBOL} · Total: {hand.length > 0 ? totals.total : "—"} ·
+                                  Status: {handStatus}
+                                </div>
+                                {outcome && (
+                                  <div className={`seat-outcome seat-outcome-${outcome}`}>
+                                    {outcome.toUpperCase()}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })
+                        )}
+                        {seat.lastPayout && seat.lastPayout > 0 && (
+                          <div className="seat-payout">Payout: +{fmt(seat.lastPayout)} {COIN_SYMBOL}</div>
                         )}
                       </div>
 
@@ -1953,9 +2137,12 @@ export default function App() {
                         <button
                           className="btn"
                           onClick={() => handleDouble(seat.id)}
-                          disabled={!canAct || seat.bankroll < seat.bet || seat.hand.length !== 2}
+                          disabled={!canAct || seat.bankroll < activeBet || activeHand.length !== 2}
                         >
                           Double
+                        </button>
+                        <button className="btn" onClick={() => handleSplit(seat.id)} disabled={!canSplit}>
+                          Split
                         </button>
                       </div>
                     </>
@@ -1977,6 +2164,24 @@ export default function App() {
               </ul>
             )}
           </div>
+
+          {wallet && walletLedger.length > 0 && (
+            <div className="ledger-log">
+              <div className="section-title">Wallet Ledger</div>
+              <ul>
+                {walletLedger.slice(-5).reverse().map((entry) => (
+                  <li key={entry.id}>
+                    <span>{new Date(entry.createdAt).toLocaleTimeString()}</span>
+                    <span>{entry.type}</span>
+                    <span className={entry.amount >= 0 ? "ledger-positive" : "ledger-negative"}>
+                      {entry.amount >= 0 ? "+" : ""}
+                      {fmt(entry.amount)} {COIN_SYMBOL}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </section>
       )}
 
