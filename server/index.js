@@ -24,6 +24,7 @@ const dataDir = process.env.BETS_DATA_DIR
   : path.join(__dirname, "data");
 fs.mkdirSync(dataDir, { recursive: true });
 const { store, persist } = makeStore(dataDir);
+const oddsHistoryPath = path.join(dataDir, "odds_history.json");
 
 // ---- Craft World GraphQL ----
 const GRAPHQL_URL = "https://craft-world.gg/graphql";
@@ -82,6 +83,47 @@ async function fetchMasterpiece(id) {
   return json;
 }
 
+function loadOddsHistoryCache() {
+  try {
+    if (!fs.existsSync(oddsHistoryPath)) return null;
+    const raw = fs.readFileSync(oddsHistoryPath, "utf-8");
+    return JSON.parse(raw);
+  } catch (e) {
+    console.error("Failed to read odds history cache:", e);
+    return null;
+  }
+}
+
+function saveOddsHistoryCache(payload) {
+  try {
+    fs.writeFileSync(oddsHistoryPath, JSON.stringify(payload, null, 2));
+  } catch (e) {
+    console.error("Failed to write odds history cache:", e);
+  }
+}
+
+async function buildOddsHistory(endId) {
+  const history = [];
+  for (let id = 1; id <= endId; id += 1) {
+    try {
+      const json = await fetchMasterpiece(id);
+      if (json?.data?.masterpiece) {
+        history.push(json.data.masterpiece);
+      }
+    } catch (e) {
+      console.error("Failed to load masterpiece", id, e);
+    }
+  }
+  const payload = {
+    startId: 1,
+    endId,
+    updatedAt: new Date().toISOString(),
+    masterpieces: history,
+  };
+  saveOddsHistoryCache(payload);
+  return payload;
+}
+
 function normalizeWallet(address) {
   if (!address || typeof address !== "string") return null;
   return address.trim().toLowerCase();
@@ -126,6 +168,26 @@ app.get("/api/masterpiece/:id", async (req, res) => {
     res.json(json);
   } catch (e) {
     res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get("/api/odds/history", async (req, res) => {
+  try {
+    const endId = Number(req.query.endId);
+    if (!Number.isFinite(endId) || endId <= 0) {
+      return res.status(400).json({ error: "endId must be a positive number" });
+    }
+
+    const refresh = String(req.query.refresh || "").toLowerCase() === "true";
+    const cached = loadOddsHistoryCache();
+    if (!refresh && cached && cached.endId >= endId) {
+      return res.json({ ok: true, data: cached });
+    }
+
+    const payload = await buildOddsHistory(endId);
+    return res.json({ ok: true, data: payload });
+  } catch (e) {
+    return res.status(500).json({ error: String(e) });
   }
 });
 
