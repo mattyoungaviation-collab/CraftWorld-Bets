@@ -75,3 +75,23 @@ export default defineConfig([
 ## Server persistence
 
 The API stores bets on disk. Set `BETS_DATA_DIR` to a persistent volume path (for example, `/var/data` on Render) so redeploys keep existing bets. If unset, the server falls back to `server/data`.
+
+## Smart contract payment routing
+
+The `contracts/BetPaymentRouter.sol` contract routes wager payments by splitting a total amount into a service fee and an escrow transfer. Configure the fee recipient, escrow recipient, and fee bps at deployment time, then call `routeTokenPayment` with the ERC-20 token address, total amount, and a bet id to emit an on-chain receipt.
+
+### Deploying the router to Ronin
+
+Provide the deployment secrets via your deployment system (do not commit them), then run:
+
+```bash
+RONIN_RPC=... \
+DEPLOYER_PRIVATE_KEY=... \
+FEE_RECIPIENT=0x... \
+ESCROW_RECIPIENT=0x... \
+FEE_BPS=500 \
+npm run deploy:router
+```
+
+The deployment script compiles `contracts/BetPaymentRouter.sol`, deploys it to Ronin, and writes a `router-deployment.json`
+file containing the deployed address and configuration.

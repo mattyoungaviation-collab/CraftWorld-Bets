@@ -1,5 +1,5 @@
 import EthereumProvider from "@walletconnect/ethereum-provider";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 
 type LeaderRow = {
@@ -94,6 +94,7 @@ type BlackjackSeat = {
   walletAddress?: string | null;
   bankroll: number;
   bet: number;
+  readyForNextRound?: boolean;
   hands: Card[][];
   handStatuses: SeatStatus[];
   handSplits: boolean[];
@@ -405,6 +406,7 @@ export default function App() {
       name: "",
       bankroll: 0,
       bet: BLACKJACK_MIN_BET,
+      readyForNextRound: false,
       hands: [],
       handStatuses: [],
       handSplits: [],
@@ -424,6 +426,7 @@ export default function App() {
   const [blackjackCooldownExpiresAt, setBlackjackCooldownExpiresAt] = useState<number | null>(null);
   const [blackjackLog, setBlackjackLog] = useState<string[]>([]);
   const [blackjackNow, setBlackjackNow] = useState(() => Date.now());
+  const autoStartCooldownRef = useRef<number | null>(null);
   const [coinDecimals, setCoinDecimals] = useState<number>(18);
   const [coinBalance, setCoinBalance] = useState<bigint | null>(null);
   const [walletLedgerBalance, setWalletLedgerBalance] = useState<number>(0);
@@ -1652,10 +1655,6 @@ export default function App() {
     sendBlackjackAction("/api/blackjack/split", { seatId, walletAddress: wallet });
   }
 
-  function handleSplit(seatId: number) {
-    sendBlackjackAction("/api/blackjack/split", { seatId });
-  }
-
   function resetBlackjackRound() {
     sendBlackjackAction("/api/blackjack/reset");
   }
@@ -1671,6 +1670,26 @@ export default function App() {
     () => (blackjackCooldownExpiresAt ? blackjackCooldownExpiresAt - blackjackNow : null),
     [blackjackCooldownExpiresAt, blackjackNow]
   );
+
+  useEffect(() => {
+    if (activeTab !== "blackjack") return;
+    if (blackjackPhase !== "idle" && blackjackPhase !== "settled") return;
+    if (!blackjackCooldownExpiresAt || cooldownCountdownMs === null || cooldownCountdownMs > 0) {
+      return;
+    }
+    if (autoStartCooldownRef.current === blackjackCooldownExpiresAt) return;
+    const hasReadySeat = blackjackSeats.some((seat) => seat.joined && (seat.readyForNextRound ?? true));
+    if (!hasReadySeat) return;
+    autoStartCooldownRef.current = blackjackCooldownExpiresAt;
+    sendBlackjackAction("/api/blackjack/start");
+  }, [
+    activeTab,
+    blackjackPhase,
+    blackjackCooldownExpiresAt,
+    cooldownCountdownMs,
+    blackjackSeats,
+    sendBlackjackAction,
+  ]);
 
   return (
     <div className="page">
@@ -2097,6 +2116,8 @@ export default function App() {
               const activeHandIndex = isActive ? blackjackActiveHand ?? seat.activeHand : seat.activeHand;
               const activeHand = seat.hands[activeHandIndex] || [];
               const activeBet = seat.bets[activeHandIndex] ?? seat.bet;
+              const isReadyForNextRound = seat.readyForNextRound ?? true;
+              const needsRebetPrompt = seat.joined && isOwner && blackjackPhase === "settled" && !isReadyForNextRound;
               const canAct = isActive && seat.handStatuses[activeHandIndex] === "playing" && isOwner;
               const canSplit =
                 canAct &&
@@ -2145,13 +2166,33 @@ export default function App() {
                         </div>
                         <div>
                           <label>Bet</label>
-                          <input
-                            type="number"
-                            min={BLACKJACK_MIN_BET}
-                            value={seat.bet}
-                            onChange={(e) => updateSeat(seat.id, { bet: Number(e.target.value) })}
-                            disabled={blackjackPhase === "player" || blackjackPhase === "dealer" || !isOwner}
-                          />
+                          <div className="seat-bet-field">
+                            <input
+                              type="number"
+                              min={BLACKJACK_MIN_BET}
+                              value={seat.bet}
+                              onChange={(e) => updateSeat(seat.id, { bet: Number(e.target.value) })}
+                              disabled={blackjackPhase === "player" || blackjackPhase === "dealer" || !isOwner}
+                            />
+                            {needsRebetPrompt && (
+                              <div className="seat-bet-overlay">
+                                <div className="seat-bet-overlay-card">
+                                  <div className="seat-bet-overlay-title">Ready for the next hand?</div>
+                                  <div className="seat-bet-overlay-actions">
+                                    <button
+                                      className="btn btn-primary"
+                                      onClick={() => updateSeat(seat.id, { readyForNextRound: true })}
+                                    >
+                                      Bet again
+                                    </button>
+                                    <button className="btn" onClick={() => leaveSeat(seat.id)}>
+                                      Leave table
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
 

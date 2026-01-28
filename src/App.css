@@ -455,8 +455,9 @@ select {
 }
 
 .dealer-hand {
-  font-size: 16px;
+  font-size: 48px;
   font-weight: 600;
+  line-height: 1;
 }
 
 .dealer-total {
@@ -501,6 +502,43 @@ select {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
+}
+
+.seat-bet-field {
+  position: relative;
+}
+
+.seat-bet-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.75);
+  border-radius: 12px;
+  padding: 8px;
+  text-align: center;
+}
+
+.seat-bet-overlay-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: #f8fafc;
+  font-size: 12px;
+}
+
+.seat-bet-overlay-title {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.seat-bet-overlay-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
 }
 
 .seat-hand {
