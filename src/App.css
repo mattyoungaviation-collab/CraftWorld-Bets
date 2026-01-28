@@ -325,6 +325,15 @@ select {
   flex-wrap: wrap;
 }
 
+.odds-search {
+  flex: 1;
+  min-width: 220px;
+}
+
+.odds-search input {
+  width: 100%;
+}
+
 .odds-actions {
   display: flex;
   gap: 12px;
@@ -427,11 +436,13 @@ select {
   border-radius: 20px;
   max-width: 720px;
   width: 100%;
+  max-height: 90vh;
   box-shadow: 0 20px 60px rgba(15, 23, 42, 0.25);
   display: flex;
   flex-direction: column;
   gap: 16px;
   padding: 20px;
+  overflow: hidden;
 }
 
 .modal-header {
@@ -449,6 +460,8 @@ select {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .confirm-grid {

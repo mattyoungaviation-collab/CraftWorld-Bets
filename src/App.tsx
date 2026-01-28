@@ -178,6 +178,7 @@ export default function App() {
   const [oddsLoading, setOddsLoading] = useState(false);
   const [oddsError, setOddsError] = useState("");
   const [oddsHistory, setOddsHistory] = useState<OddsHistory | null>(null);
+  const [oddsSearch, setOddsSearch] = useState("");
   const [selectedOddsPlayer, setSelectedOddsPlayer] = useState<OddsRow | null>(null);
   const [pendingBet, setPendingBet] = useState<{
     type: "live" | "future";
@@ -543,12 +544,18 @@ export default function App() {
     return { tier: "Low-Level", tierTone: "low" as const };
   }
 
-  function computeOdds(avgPlacement: number, appearances: number) {
+  function computeOdds(avgPlacement: number, avgFieldSize: number, appearances: number) {
     if (appearances < 3) return 2;
-    const baseChance = Math.min(0.65, Math.max(0.18, 0.65 - (avgPlacement - 1) * 0.2));
-    const stability = Math.min(1, appearances / 8);
-    const adjustedChance = Math.max(0.12, baseChance * (0.6 + 0.4 * stability));
-    return 1 / adjustedChance;
+    const normalizedPlacement = avgFieldSize > 1 ? (avgFieldSize - avgPlacement) / (avgFieldSize - 1) : 0.5;
+    const sampleWeight = Math.min(1, appearances / 12);
+    const blendedScore = 0.5 * (1 - sampleWeight) + normalizedPlacement * sampleWeight;
+    const curvedScore = Math.pow(Math.min(1, Math.max(0, blendedScore)), 1.3);
+    const minProbability = 0.04;
+    const maxProbability = 0.55;
+    const baseProbability = minProbability + (maxProbability - minProbability) * curvedScore;
+    const vig = 0.07;
+    const marketProbability = Math.min(0.9, baseProbability * (1 + vig));
+    return 1 / marketProbability;
   }
 
   function buildOddsRows(history: Masterpiece[]) {
@@ -559,6 +566,7 @@ export default function App() {
         name: string;
         avatarUrl?: string | null;
         placements: number[];
+        fieldSizes: number[];
         contributions: OddsRow["contributions"];
       }
     >();
@@ -571,12 +579,15 @@ export default function App() {
             name: row.profile.displayName || row.profile.uid,
             avatarUrl: row.profile.avatarUrl,
             placements: [],
+            fieldSizes: [],
             contributions: [],
           });
         }
         const player = map.get(key);
         if (player) {
+          const totalPlacements = entry.leaderboard?.length ?? 0;
           player.placements.push(row.position);
+          if (totalPlacements > 0) player.fieldSizes.push(totalPlacements);
           if (!player.avatarUrl && row.profile.avatarUrl) player.avatarUrl = row.profile.avatarUrl;
           if (!player.name && row.profile.displayName) player.name = row.profile.displayName;
           player.contributions.push({
@@ -595,7 +606,11 @@ export default function App() {
         appearances > 0
           ? player.placements.reduce((sum, pos) => sum + pos, 0) / appearances
           : 0;
-      const odds = computeOdds(avgPlacement, appearances);
+      const avgFieldSize =
+        player.fieldSizes.length > 0
+          ? player.fieldSizes.reduce((sum, size) => sum + size, 0) / player.fieldSizes.length
+          : 0;
+      const odds = computeOdds(avgPlacement, avgFieldSize, appearances);
       const { tier, tierTone } = getTier(appearances, avgPlacement);
       rows.push({
         uid: player.uid,
@@ -610,22 +625,18 @@ export default function App() {
       });
     }
 
-    const tierRank: Record<OddsRow["tierTone"], number> = {
-      elite: 0,
-      mid: 1,
-      low: 2,
-      new: 3,
-    };
-
-    rows.sort((a, b) => {
-      if (tierRank[a.tierTone] !== tierRank[b.tierTone]) {
-        return tierRank[a.tierTone] - tierRank[b.tierTone];
-      }
-      return a.odds - b.odds;
-    });
+    rows.sort((a, b) => a.odds - b.odds);
 
     return rows;
   }
+
+  const filteredOddsRows = useMemo(() => {
+    const query = oddsSearch.trim().toLowerCase();
+    if (!query) return oddsRows;
+    return oddsRows.filter(
+      (row) => row.name.toLowerCase().includes(query) || row.uid.toLowerCase().includes(query)
+    );
+  }, [oddsRows, oddsSearch]);
 
   async function loadOddsHistory() {
     setOddsLoading(true);
@@ -1148,8 +1159,9 @@ export default function App() {
         <section className="card odds-card">
           <div className="section-title">Player Odds Board</div>
           <div className="subtle">
-            Sportsbook-style odds based on average placement across all masterpieces from #1 through #
-            {oddsHistory?.endId ?? mpId}. Players with fewer than 3 placements are listed at even odds.
+            Sportsbook-style odds based on placement performance normalized by field size across all masterpieces from
+            #1 through #{oddsHistory?.endId ?? mpId}. Higher placements shorten odds, lower placements lengthen odds, and
+            players with fewer than 3 placements are listed at even odds.
           </div>
           <div className="odds-controls">
             <div className="odds-meta">
@@ -1162,6 +1174,16 @@ export default function App() {
                   ? `Cached ${new Date(oddsHistory.updatedAt).toLocaleString()}`
                   : "Load the full history to build odds."}
               </div>
+            </div>
+            <div className="odds-search">
+              <label htmlFor="odds-search-input">Search player</label>
+              <input
+                id="odds-search-input"
+                type="text"
+                placeholder="Search by name or ID"
+                value={oddsSearch}
+                onChange={(e) => setOddsSearch(e.target.value)}
+              />
             </div>
             <div className="odds-actions">
               <button className="btn" onClick={loadOddsHistory} disabled={oddsLoading}>
@@ -1187,10 +1209,14 @@ export default function App() {
               <div className="numeric">Odds</div>
               <div className="cell-center">Tier</div>
             </div>
-            {oddsRows.length === 0 && !oddsLoading && (
-              <div className="empty">Load the history to see veteran, mid-level, low-level, and new players.</div>
+            {filteredOddsRows.length === 0 && !oddsLoading && (
+              <div className="empty">
+                {oddsRows.length === 0
+                  ? "Load the history to see veteran, mid-level, low-level, and new players."
+                  : "No players match that search."}
+              </div>
             )}
-            {oddsRows.map((row) => (
+            {filteredOddsRows.map((row) => (
               <button
                 key={row.uid}
                 className="table-row odds-row"
