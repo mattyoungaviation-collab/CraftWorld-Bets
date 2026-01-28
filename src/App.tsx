@@ -1047,41 +1047,6 @@ export default function App() {
       </section>
 
       <section className="card">
-        <div className="section-title">Betting Board</div>
-        <div className="subtle">All bets are shown in {COIN_SYMBOL} and USD (service fee included).</div>
-        <div className="table" style={{ marginTop: 12 }}>
-          <div className="table-header">
-            <div>Time</div>
-            <div>User</div>
-            <div>Pick</div>
-            <div>Pos</div>
-            <div className="numeric">Wager</div>
-          </div>
-          {bets.length === 0 && <div className="empty">No bets yet.</div>}
-          {bets.map((bet) => {
-            const wager = bet.wagerAmount ?? bet.amount;
-            const total = bet.totalAmount ?? bet.amount;
-            const fee = bet.serviceFeeAmount ?? Math.max(total - wager, 0);
-            return (
-              <div className="table-row static" key={bet.id}>
-                <div className="subtle">{new Date(bet.createdAt).toLocaleString()}</div>
-                <div>{bet.user}</div>
-                <div>{bet.pickedName || bet.pickedUid || "—"}</div>
-                <div className="cell-center">#{bet.position}</div>
-                <div className="numeric">
-                  {fmt(wager)} {COIN_SYMBOL}
-                  <div className="subtle">
-                    Total {fmt(total)} {COIN_SYMBOL} • Fee {fmt(fee)} {COIN_SYMBOL}
-                  </div>
-                  <div className="subtle">{formatUsd((coinPrice || 0) * total)}</div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
-      <section className="card">
         <div className="section-title">My Positions</div>
         <div className="subtle">Connect your wallet to view your saved bets across devices.</div>
         <div className="actions">
