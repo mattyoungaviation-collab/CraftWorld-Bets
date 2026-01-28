@@ -232,6 +232,11 @@ select {
 
 .numeric {
   font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.table-header .numeric {
+  text-align: right;
 }
 
 .pos {
