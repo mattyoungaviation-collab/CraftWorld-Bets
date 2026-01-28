@@ -4,6 +4,9 @@ const BLACKJACK_DECKS = 6;
 const BLACKJACK_MIN_BET = 25;
 const BLACKJACK_SEATS = 5;
 const MAX_LOG_ENTRIES = 6;
+const TURN_TIME_MS = 15000;
+const ROUND_COOLDOWN_MS = 30000;
+const MAX_SPLIT_HANDS = 2;
 
 function shuffle(items) {
   const copy = [...items];
@@ -32,17 +35,28 @@ function buildShoe(decks = BLACKJACK_DECKS) {
   return shuffle(cards);
 }
 
-function createSeats() {
-  return Array.from({ length: BLACKJACK_SEATS }, (_, index) => ({
+function createSeat(index) {
+  return {
     id: index,
     name: "",
-    bankroll: 1000,
+    walletAddress: null,
+    bankroll: 0,
     bet: BLACKJACK_MIN_BET,
-    hand: [],
+    hands: [],
+    handStatuses: [],
+    handSplits: [],
+    bets: [],
+    activeHand: 0,
     status: "empty",
     pendingLeave: false,
     joined: false,
-  }));
+    lastOutcomes: [],
+    lastPayout: 0,
+  };
+}
+
+function createSeats() {
+  return Array.from({ length: BLACKJACK_SEATS }, (_, index) => createSeat(index));
 }
 
 function getHandTotals(cards) {
@@ -73,6 +87,179 @@ function appendLog(state, message) {
   state.log = [message, ...(state.log || [])].slice(0, MAX_LOG_ENTRIES);
 }
 
+function setTurnDeadline(state) {
+  if (state.phase !== "player" || state.activeSeat === null) {
+    state.turnExpiresAt = null;
+    return;
+  }
+  state.turnExpiresAt = Date.now() + TURN_TIME_MS;
+}
+
+function clearTurnDeadline(state) {
+  state.turnExpiresAt = null;
+}
+
+function setCooldown(state) {
+  state.cooldownExpiresAt = Date.now() + ROUND_COOLDOWN_MS;
+}
+
+function clearCooldown(state) {
+  state.cooldownExpiresAt = null;
+}
+
+function getNextPlayableHandIndex(seat, startIndex = 0) {
+  if (!seat?.handStatuses) return -1;
+  for (let i = startIndex; i < seat.handStatuses.length; i += 1) {
+    if (seat.handStatuses[i] === "playing") return i;
+  }
+  return -1;
+}
+
+function findNextActiveSeat(state, startIndex = 0) {
+  for (let i = startIndex; i < state.seats.length; i += 1) {
+    const seat = state.seats[i];
+    if (!seat?.joined) continue;
+    const handIndex = getNextPlayableHandIndex(seat, 0);
+    if (handIndex !== -1) {
+      return { seatIndex: i, handIndex };
+    }
+  }
+  return null;
+}
+
+function updateSeatStatus(seat) {
+  if (!seat.joined) return "empty";
+  if (!seat.hands.length) return "waiting";
+  if (seat.handStatuses.some((status) => status === "playing")) return "playing";
+  if (seat.handStatuses.every((status) => status === "blackjack")) return "blackjack";
+  return "done";
+}
+
+function drawCard(state) {
+  return state.shoe.shift();
+}
+
+function advanceTurn(state) {
+  const currentSeatIndex = state.activeSeat ?? -1;
+  const currentHandIndex = state.activeHand ?? 0;
+  if (currentSeatIndex >= 0) {
+    const seat = state.seats[currentSeatIndex];
+    const nextHandIndex = getNextPlayableHandIndex(seat, currentHandIndex + 1);
+    if (nextHandIndex !== -1) {
+      state.activeSeat = currentSeatIndex;
+      state.activeHand = nextHandIndex;
+      seat.activeHand = nextHandIndex;
+      setTurnDeadline(state);
+      return;
+    }
+  }
+
+  const next = findNextActiveSeat(state, currentSeatIndex + 1);
+  if (next) {
+    state.activeSeat = next.seatIndex;
+    state.activeHand = next.handIndex;
+    state.seats[next.seatIndex].activeHand = next.handIndex;
+    setTurnDeadline(state);
+    return;
+  }
+
+  state.phase = "dealer";
+  state.activeSeat = null;
+  state.activeHand = null;
+  clearTurnDeadline(state);
+  resolveDealerAndPayout(state);
+}
+
+function resolveDealerAndPayout(state) {
+  const nextDealer = state.dealer.length > 0 ? [...state.dealer] : [];
+  while (nextDealer.length < 2 && state.shoe.length > 0) {
+    nextDealer.push(drawCard(state));
+  }
+  while (true) {
+    const totals = getHandTotals(nextDealer);
+    if (totals.total > 21) break;
+    if (totals.total > 17) break;
+    if (totals.total === 17 && !totals.isSoft) break;
+    if (state.shoe.length === 0) break;
+    nextDealer.push(drawCard(state));
+  }
+  const dealerTotalsFinal = getHandTotals(nextDealer);
+  const dealerHasBlackjack = isBlackjack(nextDealer);
+
+  state.seats = state.seats.map((seat) => {
+    if (!seat.joined || seat.status === "waiting" || seat.status === "empty") return seat;
+    let payoutTotal = 0;
+    const outcomes = [];
+
+    seat.hands.forEach((hand, index) => {
+      const bet = seat.bets[index] ?? 0;
+      const handTotals = getHandTotals(hand);
+      let payout = 0;
+      let outcome = "lose";
+      if (handTotals.total > 21) {
+        payout = 0;
+        outcome = "lose";
+      } else if (dealerHasBlackjack && isBlackjack(hand)) {
+        payout = bet;
+        outcome = "push";
+      } else if (isBlackjack(hand) && !seat.handSplits?.[index]) {
+        payout = bet * 2.5;
+        outcome = "blackjack";
+      } else if (dealerTotalsFinal.total > 21) {
+        payout = bet * 2;
+        outcome = "win";
+      } else if (handTotals.total > dealerTotalsFinal.total) {
+        payout = bet * 2;
+        outcome = "win";
+      } else if (handTotals.total === dealerTotalsFinal.total) {
+        payout = bet;
+        outcome = "push";
+      }
+      payoutTotal += payout;
+      outcomes.push(outcome);
+    });
+
+    if (seat.walletAddress && payoutTotal > 0) {
+      state.ledgerQueue.push({
+        walletAddress: seat.walletAddress,
+        amount: payoutTotal,
+        type: "payout",
+        seatId: seat.id,
+      });
+    }
+
+    return {
+      ...seat,
+      bankroll: seat.bankroll + payoutTotal,
+      status: "done",
+      lastOutcomes: outcomes,
+      lastPayout: payoutTotal,
+      handStatuses: seat.handStatuses.map(() => "done"),
+    };
+  });
+
+  state.dealer = nextDealer;
+  state.seats = state.seats.map((seat) =>
+    seat.pendingLeave
+      ? {
+          ...createSeat(seat.id),
+          joined: false,
+        }
+      : seat
+  );
+  state.phase = "settled";
+  state.activeSeat = null;
+  state.activeHand = null;
+  clearTurnDeadline(state);
+  setCooldown(state);
+  appendLog(
+    state,
+    dealerTotalsFinal.total > 21
+      ? "Dealer busts. Payouts settled. Next round in 30s."
+      : "Dealer stands. Payouts settled. Next round in 30s."
+  );
+}
+
 export function createDefaultBlackjackState() {
   return {
     seats: createSeats(),
@@ -80,7 +267,11 @@ export function createDefaultBlackjackState() {
     shoe: buildShoe(),
     phase: "idle",
     activeSeat: null,
+    activeHand: null,
     log: [],
+    turnExpiresAt: null,
+    cooldownExpiresAt: null,
+    ledgerQueue: [],
     updatedAt: new Date().toISOString(),
   };
 }
@@ -92,13 +283,26 @@ export function loadBlackjackState(filePath) {
     if (!raw || typeof raw !== "object") return createDefaultBlackjackState();
     const seats = Array.isArray(raw.seats) && raw.seats.length > 0 ? raw.seats : createSeats();
     const shoe = Array.isArray(raw.shoe) && raw.shoe.length > 0 ? raw.shoe : buildShoe();
+    const normalizedSeats = seats.map((seat, index) => ({
+      ...createSeat(index),
+      ...seat,
+      hands: Array.isArray(seat.hands) ? seat.hands : [],
+      handStatuses: Array.isArray(seat.handStatuses) ? seat.handStatuses : [],
+      handSplits: Array.isArray(seat.handSplits) ? seat.handSplits : [],
+      bets: Array.isArray(seat.bets) ? seat.bets : [],
+      lastOutcomes: Array.isArray(seat.lastOutcomes) ? seat.lastOutcomes : [],
+    }));
     return {
-      seats,
+      seats: normalizedSeats,
       dealer: Array.isArray(raw.dealer) ? raw.dealer : [],
       shoe,
       phase: raw.phase || "idle",
       activeSeat: Number.isInteger(raw.activeSeat) ? raw.activeSeat : null,
+      activeHand: Number.isInteger(raw.activeHand) ? raw.activeHand : null,
       log: Array.isArray(raw.log) ? raw.log : [],
+      turnExpiresAt: raw.turnExpiresAt ?? null,
+      cooldownExpiresAt: raw.cooldownExpiresAt ?? null,
+      ledgerQueue: Array.isArray(raw.ledgerQueue) ? raw.ledgerQueue : [],
       updatedAt: raw.updatedAt || new Date().toISOString(),
     };
   } catch (e) {
@@ -115,16 +319,25 @@ export function saveBlackjackState(filePath, state) {
   }
 }
 
-export function joinSeat(state, seatId, name = "") {
+export function joinSeat(state, seatId, name = "", walletAddress = null, bankrollOverride = null) {
   const seat = state.seats.find((s) => s.id === seatId);
   if (!seat) return { error: "Seat not found" };
   if (seat.joined) return { error: "Seat already joined" };
   seat.joined = true;
   seat.status = "waiting";
   seat.pendingLeave = false;
-  seat.hand = [];
-  seat.lastOutcome = undefined;
+  seat.hands = [];
+  seat.handStatuses = [];
+  seat.handSplits = [];
+  seat.bets = [];
+  seat.activeHand = 0;
+  seat.lastOutcomes = [];
+  seat.lastPayout = 0;
   seat.name = name || seat.name || "Player";
+  seat.walletAddress = walletAddress || seat.walletAddress || null;
+  if (bankrollOverride !== null && Number.isFinite(bankrollOverride)) {
+    seat.bankroll = bankrollOverride;
+  }
   appendLog(state, `Seat ${seatId + 1} joined the table.`);
   touch(state);
   return { ok: true };
@@ -138,11 +351,7 @@ export function leaveSeat(state, seatId) {
     seat.pendingLeave = true;
     appendLog(state, `Seat ${seatId + 1} will leave after this round.`);
   } else {
-    seat.joined = false;
-    seat.status = "empty";
-    seat.hand = [];
-    seat.pendingLeave = false;
-    seat.lastOutcome = undefined;
+    state.seats[seatId] = createSeat(seatId);
     appendLog(state, `Seat ${seatId + 1} left the table.`);
   }
   touch(state);
@@ -158,14 +367,6 @@ export function updateSeat(state, seatId, updates) {
   }
   if (updates.name !== undefined) {
     seat.name = String(updates.name || "").slice(0, 32);
-  }
-  if (updates.bankroll !== undefined) {
-    const bankroll = Number(updates.bankroll);
-    if (!Number.isFinite(bankroll) || bankroll < 0) return { error: "Invalid bankroll" };
-    seat.bankroll = bankroll;
-    if (seat.bet > seat.bankroll) {
-      seat.bet = Math.max(BLACKJACK_MIN_BET, seat.bankroll);
-    }
   }
   if (updates.bet !== undefined) {
     const bet = Number(updates.bet);
@@ -186,77 +387,6 @@ export function shuffleShoe(state) {
   return { ok: true };
 }
 
-function nextPlayingSeatIndex(seats) {
-  return seats.findIndex((seat) => seat.joined && seat.status === "playing");
-}
-
-function resolveDealerAndPayout(state) {
-  const nextDealer = state.dealer.length > 0 ? [...state.dealer] : [];
-  while (nextDealer.length < 2 && state.shoe.length > 0) {
-    nextDealer.push(state.shoe.shift());
-  }
-  while (true) {
-    const totals = getHandTotals(nextDealer);
-    if (totals.total > 21) break;
-    if (totals.total > 17) break;
-    if (totals.total === 17 && !totals.isSoft) break;
-    if (state.shoe.length === 0) break;
-    nextDealer.push(state.shoe.shift());
-  }
-  const dealerTotalsFinal = getHandTotals(nextDealer);
-  const dealerHasBlackjack = isBlackjack(nextDealer);
-  state.seats = state.seats.map((seat) => {
-    if (!seat.joined || seat.status === "waiting" || seat.status === "empty") return seat;
-    const playerTotals = getHandTotals(seat.hand);
-    let payout = 0;
-    let outcome = "lose";
-    if (playerTotals.total > 21) {
-      payout = 0;
-      outcome = "lose";
-    } else if (dealerHasBlackjack && isBlackjack(seat.hand)) {
-      payout = seat.bet;
-      outcome = "push";
-    } else if (isBlackjack(seat.hand)) {
-      payout = seat.bet * 2.5;
-      outcome = "blackjack";
-    } else if (dealerTotalsFinal.total > 21) {
-      payout = seat.bet * 2;
-      outcome = "win";
-    } else if (playerTotals.total > dealerTotalsFinal.total) {
-      payout = seat.bet * 2;
-      outcome = "win";
-    } else if (playerTotals.total === dealerTotalsFinal.total) {
-      payout = seat.bet;
-      outcome = "push";
-    }
-    return {
-      ...seat,
-      bankroll: seat.bankroll + payout,
-      status: "done",
-      lastOutcome: outcome,
-    };
-  });
-  state.dealer = nextDealer;
-  state.seats = state.seats.map((seat) =>
-    seat.pendingLeave
-      ? {
-          ...seat,
-          joined: false,
-          status: "empty",
-          hand: [],
-          pendingLeave: false,
-          lastOutcome: undefined,
-        }
-      : seat
-  );
-  state.phase = "settled";
-  state.activeSeat = null;
-  appendLog(
-    state,
-    dealerTotalsFinal.total > 21 ? "Dealer busts. Payouts settled." : "Dealer stands. Payouts settled."
-  );
-}
-
 export function startRound(state) {
   const activeSeats = state.seats.filter((seat) => seat.joined);
   if (activeSeats.length === 0) {
@@ -269,51 +399,68 @@ export function startRound(state) {
     state.shoe = buildShoe();
     appendLog(state, "Shoe re-shuffled for the next hand.");
   }
-  const draw = () => state.shoe.shift();
+  clearCooldown(state);
   const nextDealer = [];
   const dealtSeats = state.seats.map((seat) => {
     if (!seat.joined) return seat;
     const bet = Math.max(BLACKJACK_MIN_BET, Math.min(seat.bet, seat.bankroll));
     if (bet <= 0 || seat.bankroll < bet) {
-      return { ...seat, status: "waiting", hand: [], lastOutcome: undefined };
+      return {
+        ...seat,
+        status: "waiting",
+        hands: [],
+        handStatuses: [],
+        handSplits: [],
+        bets: [],
+        activeHand: 0,
+        lastOutcomes: [],
+        lastPayout: 0,
+      };
     }
-    const hand = [draw(), draw()];
-    const status = isBlackjack(hand) ? "blackjack" : "playing";
+    const hand = [drawCard(state), drawCard(state)];
+    const handStatus = isBlackjack(hand) ? "blackjack" : "playing";
+    if (seat.walletAddress) {
+      state.ledgerQueue.push({
+        walletAddress: seat.walletAddress,
+        amount: -bet,
+        type: "wager",
+        seatId: seat.id,
+        handIndex: 0,
+      });
+    }
     return {
       ...seat,
       bet,
       bankroll: seat.bankroll - bet,
-      hand,
-      status,
-      lastOutcome: undefined,
+      hands: [hand],
+      handStatuses: [handStatus],
+      handSplits: [false],
+      bets: [bet],
+      activeHand: 0,
+      status: handStatus === "playing" ? "playing" : "blackjack",
+      lastOutcomes: [],
+      lastPayout: 0,
     };
   });
-  nextDealer.push(draw(), draw());
+  nextDealer.push(drawCard(state), drawCard(state));
   state.seats = dealtSeats;
   state.dealer = nextDealer;
-  const firstPlayingIndex = nextPlayingSeatIndex(dealtSeats);
-  if (firstPlayingIndex === -1) {
+  const firstPlaying = findNextActiveSeat(state, 0);
+  if (!firstPlaying) {
     state.phase = "dealer";
     state.activeSeat = null;
+    state.activeHand = null;
     resolveDealerAndPayout(state);
   } else {
     state.phase = "player";
-    state.activeSeat = firstPlayingIndex;
+    state.activeSeat = firstPlaying.seatIndex;
+    state.activeHand = firstPlaying.handIndex;
+    state.seats[firstPlaying.seatIndex].activeHand = firstPlaying.handIndex;
+    setTurnDeadline(state);
   }
   appendLog(state, "Cards are dealt. Players act in seat order.");
   touch(state);
   return { ok: true };
-}
-
-function advanceToDealerIfDone(state) {
-  const nextIndex = nextPlayingSeatIndex(state.seats);
-  if (nextIndex === -1) {
-    state.phase = "dealer";
-    state.activeSeat = null;
-    resolveDealerAndPayout(state);
-  } else {
-    state.activeSeat = nextIndex;
-  }
 }
 
 export function hit(state, seatId) {
@@ -322,18 +469,22 @@ export function hit(state, seatId) {
   if (seatIndex === -1) return { error: "Seat not found" };
   if (state.activeSeat !== seatIndex) return { error: "Seat not active" };
   const seat = state.seats[seatIndex];
-  if (seat.status !== "playing") return { error: "Seat cannot act" };
-  const card = state.shoe.shift();
+  const handIndex = state.activeHand ?? 0;
+  if (seat.handStatuses[handIndex] !== "playing") return { error: "Seat cannot act" };
+  const card = drawCard(state);
   if (!card) return { error: "Shoe empty" };
-  seat.hand = [...seat.hand, card];
-  const totals = getHandTotals(seat.hand);
+  seat.hands[handIndex] = [...seat.hands[handIndex], card];
+  const totals = getHandTotals(seat.hands[handIndex]);
   if (totals.total > 21) {
-    seat.status = "busted";
+    seat.handStatuses[handIndex] = "busted";
   } else if (totals.total === 21) {
-    seat.status = "stood";
+    seat.handStatuses[handIndex] = "stood";
   }
-  if (seat.status !== "playing") {
-    advanceToDealerIfDone(state);
+  seat.status = updateSeatStatus(seat);
+  if (seat.handStatuses[handIndex] !== "playing") {
+    advanceTurn(state);
+  } else {
+    setTurnDeadline(state);
   }
   touch(state);
   return { ok: true };
@@ -344,8 +495,10 @@ export function stand(state, seatId) {
   const seatIndex = state.seats.findIndex((seat) => seat.id === seatId);
   if (seatIndex === -1) return { error: "Seat not found" };
   if (state.activeSeat !== seatIndex) return { error: "Seat not active" };
-  state.seats[seatIndex] = { ...state.seats[seatIndex], status: "stood" };
-  advanceToDealerIfDone(state);
+  const handIndex = state.activeHand ?? 0;
+  state.seats[seatIndex].handStatuses[handIndex] = "stood";
+  state.seats[seatIndex].status = updateSeatStatus(state.seats[seatIndex]);
+  advanceTurn(state);
   touch(state);
   return { ok: true };
 }
@@ -356,16 +509,92 @@ export function doubleDown(state, seatId) {
   if (seatIndex === -1) return { error: "Seat not found" };
   if (state.activeSeat !== seatIndex) return { error: "Seat not active" };
   const seat = state.seats[seatIndex];
-  if (seat.status !== "playing" || seat.hand.length !== 2) return { error: "Seat cannot double" };
-  if (seat.bankroll < seat.bet) return { error: "Insufficient bankroll" };
-  const card = state.shoe.shift();
+  const handIndex = state.activeHand ?? 0;
+  const bet = seat.bets[handIndex];
+  if (seat.handStatuses[handIndex] !== "playing" || seat.hands[handIndex].length !== 2) {
+    return { error: "Seat cannot double" };
+  }
+  if (seat.bankroll < bet) return { error: "Insufficient bankroll" };
+  const card = drawCard(state);
   if (!card) return { error: "Shoe empty" };
-  seat.hand = [...seat.hand, card];
-  seat.bankroll -= seat.bet;
-  seat.bet *= 2;
-  const totals = getHandTotals(seat.hand);
-  seat.status = totals.total > 21 ? "busted" : "stood";
-  advanceToDealerIfDone(state);
+  seat.hands[handIndex] = [...seat.hands[handIndex], card];
+  seat.bankroll -= bet;
+  seat.bets[handIndex] = bet * 2;
+  if (seat.walletAddress) {
+    state.ledgerQueue.push({
+      walletAddress: seat.walletAddress,
+      amount: -bet,
+      type: "double",
+      seatId: seat.id,
+      handIndex,
+    });
+  }
+  const totals = getHandTotals(seat.hands[handIndex]);
+  seat.handStatuses[handIndex] = totals.total > 21 ? "busted" : "stood";
+  seat.status = updateSeatStatus(seat);
+  advanceTurn(state);
+  touch(state);
+  return { ok: true };
+}
+
+export function splitHand(state, seatId) {
+  if (state.phase !== "player") return { error: "Hand not active" };
+  const seatIndex = state.seats.findIndex((seat) => seat.id === seatId);
+  if (seatIndex === -1) return { error: "Seat not found" };
+  if (state.activeSeat !== seatIndex) return { error: "Seat not active" };
+  const seat = state.seats[seatIndex];
+  if (seat.hands.length >= MAX_SPLIT_HANDS) return { error: "Maximum splits reached" };
+  const handIndex = state.activeHand ?? 0;
+  const hand = seat.hands[handIndex];
+  if (!hand || hand.length !== 2) return { error: "Hand cannot be split" };
+  if (hand[0].rank !== hand[1].rank) return { error: "Cards must match to split" };
+  const bet = seat.bets[handIndex];
+  if (seat.bankroll < bet) return { error: "Insufficient bankroll" };
+
+  const [first, second] = hand;
+  seat.bankroll -= bet;
+  seat.hands = [[first], [second]];
+  seat.bets = [bet, bet];
+  seat.handSplits = [true, true];
+  seat.handStatuses = ["playing", "playing"];
+  seat.activeHand = 0;
+  if (seat.walletAddress) {
+    state.ledgerQueue.push({
+      walletAddress: seat.walletAddress,
+      amount: -bet,
+      type: "split",
+      seatId: seat.id,
+      handIndex: 1,
+    });
+  }
+  seat.hands[0].push(drawCard(state));
+  seat.hands[1].push(drawCard(state));
+  seat.handStatuses = seat.hands.map((cards) => {
+    const totals = getHandTotals(cards);
+    if (totals.total > 21) return "busted";
+    if (totals.total >= 21) return "stood";
+    return "playing";
+  });
+  seat.status = updateSeatStatus(seat);
+  appendLog(state, `Seat ${seatId + 1} split their hand.`);
+  if (seat.handStatuses[0] !== "playing") {
+    advanceTurn(state);
+  } else {
+    setTurnDeadline(state);
+  }
+  touch(state);
+  return { ok: true };
+}
+
+export function timeoutStand(state) {
+  if (state.phase !== "player" || state.activeSeat === null) return { ok: false };
+  const seat = state.seats[state.activeSeat];
+  const handIndex = state.activeHand ?? 0;
+  if (!seat || seat.handStatuses[handIndex] !== "playing") return { ok: false };
+  seat.handStatuses[handIndex] = "stood";
+  seat.status = updateSeatStatus(seat);
+  appendLog(state, `Seat ${seat.id + 1} timed out. Auto-stand.`);
+  advanceTurn(state);
   touch(state);
   return { ok: true };
 }
@@ -375,19 +604,27 @@ export function resetRound(state) {
     seat.joined
       ? {
           ...seat,
-          hand: [],
+          hands: [],
+          handStatuses: [],
+          handSplits: [],
+          bets: [],
+          activeHand: 0,
           status: "waiting",
           bet: Math.max(BLACKJACK_MIN_BET, seat.bet),
-          lastOutcome: undefined,
+          lastOutcomes: [],
+          lastPayout: 0,
         }
       : seat
   );
   state.dealer = [];
   state.phase = "idle";
   state.activeSeat = null;
+  state.activeHand = null;
+  clearTurnDeadline(state);
+  clearCooldown(state);
   appendLog(state, "Table reset for a new round.");
   touch(state);
   return { ok: true };
 }
 
-export { BLACKJACK_MIN_BET, BLACKJACK_DECKS };
+export { BLACKJACK_MIN_BET, BLACKJACK_DECKS, TURN_TIME_MS, ROUND_COOLDOWN_MS };
