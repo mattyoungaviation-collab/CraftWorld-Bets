@@ -985,7 +985,7 @@ export default function App() {
         <div className="section-title">Leaderboard (click to bet)</div>
         <div className="table">
           <div className="table-header">
-            <div>Pos</div>
+            <div className="cell-center">Pos</div>
             <div>Player</div>
             <div className="numeric">Points</div>
             <div className="numeric">Odds</div>
@@ -1003,7 +1003,7 @@ export default function App() {
                 disabled={placing || bettingClosed}
                 className="table-row"
               >
-                <div className="pos">#{row.position}</div>
+                <div className="pos cell-center">#{row.position}</div>
 
                 <div className="player">
                   {avatar ? (
@@ -1056,7 +1056,7 @@ export default function App() {
                 <div className="subtle">{new Date(bet.createdAt).toLocaleString()}</div>
                 <div>{bet.user}</div>
                 <div>{bet.pickedName || bet.pickedUid || "—"}</div>
-                <div>#{bet.position}</div>
+                <div className="cell-center">#{bet.position}</div>
                 <div className="numeric">
                   {fmt(wager)} {COIN_SYMBOL}
                   <div className="subtle">
@@ -1102,7 +1102,7 @@ export default function App() {
           <div className="table positions-table" style={{ marginTop: 12 }}>
             <div className="table-header">
               <div>Time</div>
-              <div>Masterpiece</div>
+              <div className="cell-center">Masterpiece</div>
               <div>Pick</div>
               <div>Pos</div>
               <div className="numeric">Bet Cost</div>
@@ -1141,9 +1141,9 @@ export default function App() {
               return (
                 <div className="table-row static" key={bet.id}>
                   <div className="subtle">{new Date(bet.createdAt).toLocaleString()}</div>
-                  <div>#{bet.masterpieceId}</div>
+                  <div className="cell-center">#{bet.masterpieceId}</div>
                   <div>{bet.pickedName || bet.pickedUid || "—"}</div>
-                  <div>#{bet.position}</div>
+                  <div className="cell-center">#{bet.position}</div>
                   <div className="numeric">
                     {fmt(total)} {COIN_SYMBOL}
                     <div className="subtle">{formatUsd((coinPrice || 0) * total)}</div>
@@ -1178,7 +1178,7 @@ export default function App() {
         {hasLiveBoard && (
           <div className="table" style={{ marginTop: 12 }}>
             <div className="table-header">
-              <div>Pos</div>
+              <div className="cell-center">Pos</div>
               <div>Leader</div>
               <div>Recipient</div>
               <div className="numeric">Size</div>
@@ -1189,7 +1189,7 @@ export default function App() {
             )}
             {liveWinners.map((winner) => (
               <div className="table-row static" key={winner.id}>
-                <div>#{winner.position}</div>
+                <div className="cell-center">#{winner.position}</div>
                 <div>{winner.leader}</div>
                 <div>{winner.recipient}</div>
                 <div className="numeric">

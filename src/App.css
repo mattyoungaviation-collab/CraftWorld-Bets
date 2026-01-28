@@ -253,6 +253,14 @@ select {
   color: #64748b;
 }
 
+.cell-center {
+  text-align: center;
+}
+
+.cell-right {
+  text-align: right;
+}
+
 .empty {
   padding: 16px;
   text-align: center;
