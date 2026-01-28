@@ -1652,10 +1652,6 @@ export default function App() {
     sendBlackjackAction("/api/blackjack/split", { seatId, walletAddress: wallet });
   }
 
-  function handleSplit(seatId: number) {
-    sendBlackjackAction("/api/blackjack/split", { seatId });
-  }
-
   function resetBlackjackRound() {
     sendBlackjackAction("/api/blackjack/reset");
   }
