@@ -3,6 +3,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import express from "express";
 import { makeStore, newId, settleMarket } from "./betting.js";
+import { computeModelOdds } from "./odds.js";
 
 const app = express();
 app.use(express.json());
@@ -25,6 +26,7 @@ const dataDir = process.env.BETS_DATA_DIR
 fs.mkdirSync(dataDir, { recursive: true });
 const { store, persist } = makeStore(dataDir);
 const oddsHistoryPath = path.join(dataDir, "odds_history.json");
+const modelHistoryPath = path.join(dataDir, "history.json");
 
 // ---- Craft World GraphQL ----
 const GRAPHQL_URL = "https://craft-world.gg/graphql";
@@ -186,6 +188,23 @@ app.get("/api/odds/history", async (req, res) => {
 
     const payload = await buildOddsHistory(endId);
     return res.json({ ok: true, data: payload });
+  } catch (e) {
+    return res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get("/api/odds/model", (_req, res) => {
+  try {
+    const history = fs.existsSync(modelHistoryPath)
+      ? JSON.parse(fs.readFileSync(modelHistoryPath, "utf-8"))
+      : {};
+    const { probs, odds, strength } = computeModelOdds(history, {
+      lambda: 0.35,
+      tau: 0.9,
+      k: 3,
+      usePoints: true,
+    });
+    return res.json({ ok: true, probs, odds, strength });
   } catch (e) {
     return res.status(500).json({ error: String(e) });
   }
