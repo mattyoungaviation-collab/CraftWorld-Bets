@@ -1482,6 +1482,26 @@ export default function App() {
     return () => window.clearInterval(interval);
   }, [activeTab, wallet]);
 
+  async function loadWalletLedger(address: string) {
+    try {
+      const r = await fetch(`/api/wallets/${encodeURIComponent(address)}/ledger`);
+      const j = await r.json();
+      if (!r.ok) return;
+      const balance = Number(j?.wallet?.balance);
+      if (!Number.isFinite(balance)) return;
+      const normalized = address.toLowerCase();
+      setBlackjackSeats((prev) =>
+        prev.map((seat) =>
+          seat.walletAddress && seat.walletAddress.toLowerCase() === normalized
+            ? { ...seat, bankroll: balance }
+            : seat
+        )
+      );
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
   async function sendBlackjackAction(endpoint: string, payload?: Record<string, unknown>) {
     try {
       const r = await fetch(endpoint, {
