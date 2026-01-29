@@ -1,5 +1,6 @@
 import EthereumProvider from "@walletconnect/ethereum-provider";
 import { useEffect, useMemo, useRef, useState } from "react";
+import SiteFooter from "./components/SiteFooter";
 import "./App.css";
 
 type LeaderRow = {
@@ -2549,6 +2550,7 @@ export default function App() {
           </div>
         </div>
       )}
+      <SiteFooter />
     </div>
   );
 }
