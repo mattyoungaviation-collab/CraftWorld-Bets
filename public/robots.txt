@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Allow: /terms
+Allow: /privacy
+Sitemap: https://craftworld-bets.onrender.com/sitemap.xml

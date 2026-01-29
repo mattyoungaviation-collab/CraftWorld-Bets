@@ -847,3 +847,66 @@ select {
     display: none;
   }
 }
+
+.policy-page h1 {
+  margin: 8px 0 12px;
+  font-size: 30px;
+}
+
+.policy-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.policy-section h2 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+.policy-section h3 {
+  margin: 12px 0 6px;
+  font-size: 16px;
+  color: #0f172a;
+}
+
+.policy-section p {
+  margin: 0 0 8px;
+}
+
+.policy-section ul {
+  margin: 0 0 8px 18px;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.site-footer {
+  margin-top: 12px;
+  padding: 18px 20px;
+  border-radius: 16px;
+  background: #f1f5f9;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 14px;
+  color: #475569;
+}
+
+.site-footer-links {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.site-footer-links a {
+  color: #0f172a;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.site-footer-links a:hover {
+  text-decoration: underline;
+}
