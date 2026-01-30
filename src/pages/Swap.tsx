@@ -52,6 +52,7 @@ function formatNumber(value: number | null, decimals = 6) {
 
 export default function Swap() {
   const { wallet, provider: walletProvider, chainId, connectWallet, disconnectWallet, walletConnectEnabled } = useWallet();
+  const [authToken, setAuthToken] = useState(() => localStorage.getItem("cw_bets_token") || "");
   const { ronBalance, dynwBalance, wronBalance, refresh: refreshBalances } = useRoninBalances(wallet, walletProvider);
   const { reserveRon, reserveDynw, priceRonPerDynw, error: poolError, refresh: refreshPool } = useDynwRonPool();
   const [amountIn, setAmountIn] = useState("");
@@ -125,30 +126,42 @@ export default function Swap() {
   const missingConfig = false;
 
   useEffect(() => {
+    const syncAuth = () => {
+      setAuthToken(localStorage.getItem("cw_bets_token") || "");
+    };
+    window.addEventListener("storage", syncAuth);
+    return () => window.removeEventListener("storage", syncAuth);
+  }, []);
+
+  useEffect(() => {
     const loadGameWallet = async () => {
+      if (!authToken) {
+        setGameWalletAddress(null);
+        return;
+      }
       try {
-        const res = await fetch("/api/game-wallet");
+        const res = await fetch("/api/game-wallet", { headers: { authorization: `Bearer ${authToken}` } });
         const json = await res.json();
-        if (res.ok && json?.address) {
-          setGameWalletAddress(json.address);
+        if (res.ok && json?.gameWalletAddress) {
+          setGameWalletAddress(json.gameWalletAddress);
         }
       } catch (e) {
         console.error(e);
       }
     };
     loadGameWallet();
-  }, []);
+  }, [authToken]);
 
   useEffect(() => {
     if (!gameWalletAddress) return;
-    const provider = getRoninProvider();
     const loadBalance = async () => {
       try {
-        const data = `0x70a08231${padAddress(gameWalletAddress)}`;
-        const balanceHex = await provider.send("eth_call", [{ to: DYNW_TOKEN.address, data }, "latest"]);
-        setGameWalletBalance(BigInt(balanceHex));
-        const ronBalance = await provider.getBalance(gameWalletAddress);
-        setGameWalletRonBalance(ronBalance);
+        if (!authToken) return;
+        const res = await fetch("/api/game-wallet/balances", { headers: { authorization: `Bearer ${authToken}` } });
+        const json = await res.json();
+        if (!res.ok) return;
+        setGameWalletBalance(parseUnits(json.dynw, DYNW_TOKEN.decimals));
+        setGameWalletRonBalance(parseUnits(json.ron, 18));
       } catch (e) {
         console.error(e);
       }
@@ -156,7 +169,7 @@ export default function Swap() {
     loadBalance();
     const interval = setInterval(loadBalance, 20000);
     return () => clearInterval(interval);
-  }, [gameWalletAddress]);
+  }, [gameWalletAddress, authToken]);
 
   async function waitForReceipt(txHash: string, timeoutMs = 180000) {
     if (!walletProvider) throw new Error("Wallet provider not ready.");
@@ -223,10 +236,14 @@ export default function Swap() {
           setSwapError("Game wallet address is required for swaps from the game wallet.");
           return;
         }
+        if (!authToken) {
+          setSwapError("Sign in to use the game wallet swap.");
+          return;
+        }
         setSwapStatus("Requesting game wallet swap...");
         const response = await fetch("/api/game-wallet/swap", {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", authorization: `Bearer ${authToken}` },
           body: JSON.stringify({
             direction: "DYNW_TO_RON",
             amountIn: amountParsed.toString(),

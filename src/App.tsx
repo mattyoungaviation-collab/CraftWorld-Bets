@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import SiteFooter from "./components/SiteFooter";
 import { useDynwRonPool } from "./lib/useDynwRonPool";
@@ -37,6 +37,8 @@ type Masterpiece = {
 type Bet = {
   id: string;
   user: string;
+  userId?: string | null;
+  loginAddress?: string | null;
   masterpieceId: number;
   position: number;
   pickedUid: string | null;
@@ -46,6 +48,7 @@ type Bet = {
   serviceFeeAmount?: number;
   wagerAmount?: number;
   walletAddress?: string | null;
+  gameWalletAddress?: string | null;
   escrowTx?: string | null;
   feeTx?: string | null;
   createdAt: string;
@@ -125,14 +128,9 @@ type BlackjackState = {
 };
 
 const COIN_SYMBOL = DYNW_TOKEN.symbol;
-const COIN_CONTRACT = DYNW_TOKEN.address;
-const ERC20_TRANSFER = "0xa9059cbb";
-const ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const SERVICE_FEE_BPS = 500;
 const SERVICE_FEE_ADDRESS = "0xeED0491B506C78EA7fD10988B1E98A3C88e1C630";
-const BET_ESCROW_ADDRESS =
-  (import.meta.env.VITE_BET_ESCROW_ADDRESS as string | undefined) ||
-  "0xe455CFd27fd0C1DEfb57Ab371092C4Cf60D4D723";
+const BET_ESCROW_ADDRESS = (import.meta.env.VITE_BET_ESCROW_ADDRESS as string | undefined) || "";
 const BLACKJACK_DECKS = 6;
 const BLACKJACK_HOUSE_EDGE = 0.6;
 const BLACKJACK_MIN_BET = 25;
@@ -336,44 +334,6 @@ function simulateOdds(
   };
 }
 
-function padAddress(address: string) {
-  return address.toLowerCase().replace("0x", "").padStart(64, "0");
-}
-
-function padAmount(amount: bigint) {
-  return amount.toString(16).padStart(64, "0");
-}
-
-function encodeTransfer(to: string, amount: bigint) {
-  return `${ERC20_TRANSFER}${padAddress(to)}${padAmount(amount)}`;
-}
-
-function parseHexAmount(value?: string | null) {
-  if (!value) return null;
-  try {
-    return BigInt(value);
-  } catch {
-    return null;
-  }
-}
-
-function padTopicAddress(address: string) {
-  return `0x${padAddress(address)}`;
-}
-
-function findTransferAmount(logs: Array<{ topics?: string[]; data?: string; address?: string }>, to: string) {
-  const target = padTopicAddress(to);
-  for (const log of logs) {
-    if (!log || !log.topics || log.topics.length < 3) continue;
-    if (log.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC) continue;
-    if (log.address?.toLowerCase() !== COIN_CONTRACT.toLowerCase()) continue;
-    if (log.topics[2]?.toLowerCase() !== target) continue;
-    const amount = parseHexAmount(log.data);
-    if (amount !== null) return amount;
-  }
-  return null;
-}
-
 function isValidAddress(address?: string | null) {
   if (!address) return false;
   return /^0x[a-fA-F0-9]{40}$/.test(address);
@@ -383,6 +343,18 @@ export default function App() {
   const [username, setUsername] = useState(() => localStorage.getItem("cw_bets_user") || "");
   const { wallet, provider: walletProvider, chainId, connectWallet, disconnectWallet, walletConnectEnabled } =
     useWallet();
+  const [authToken, setAuthToken] = useState(() => localStorage.getItem("cw_bets_token") || "");
+  const [loginAddress, setLoginAddress] = useState<string | null>(
+    () => localStorage.getItem("cw_bets_login") || null
+  );
+  const [gameWalletAddress, setGameWalletAddress] = useState<string | null>(null);
+  const [gameWalletRon, setGameWalletRon] = useState<string>("0");
+  const [gameWalletDynw, setGameWalletDynw] = useState<string>("0");
+  const [gameWalletLoading, setGameWalletLoading] = useState(false);
+  const [gameWalletError, setGameWalletError] = useState("");
+  const [withdrawToken, setWithdrawToken] = useState<"RON" | "DYNW">("RON");
+  const [withdrawAmount, setWithdrawAmount] = useState("");
+  const [withdrawStatus, setWithdrawStatus] = useState("");
   const [mpId, setMpId] = useState<number>(() => {
     const stored = localStorage.getItem("cw_bets_mp_id");
     const parsed = stored ? Number(stored) : NaN;
@@ -456,38 +428,72 @@ export default function App() {
   const hasEscrowAddress = Boolean(BET_ESCROW_ADDRESS);
   const escrowAddressValid = isValidAddress(escrowAddress);
   const isWrongChain = !!wallet && chainId !== null && chainId !== RONIN_CHAIN.chainId;
+  const isSignedIn = Boolean(authToken && loginAddress);
+
+  const authFetch = useCallback(
+    async (input: RequestInfo, init: RequestInit = {}) => {
+      const headers = new Headers(init.headers);
+      if (authToken) {
+        headers.set("authorization", `Bearer ${authToken}`);
+      }
+      if (!headers.has("content-type") && init.body) {
+        headers.set("content-type", "application/json");
+      }
+      const response = await fetch(input, { ...init, headers });
+      return response;
+    },
+    [authToken]
+  );
 
   useEffect(() => {
     localStorage.setItem("cw_bets_user", username);
   }, [username]);
 
   useEffect(() => {
+    if (authToken) {
+      localStorage.setItem("cw_bets_token", authToken);
+    } else {
+      localStorage.removeItem("cw_bets_token");
+    }
+  }, [authToken]);
+
+  useEffect(() => {
+    if (loginAddress) {
+      localStorage.setItem("cw_bets_login", loginAddress);
+    } else {
+      localStorage.removeItem("cw_bets_login");
+    }
+  }, [loginAddress]);
+
+  useEffect(() => {
     localStorage.setItem("cw_bets_mp_id", String(mpId));
   }, [mpId]);
 
   useEffect(() => {
-    if (!wallet) {
+    if (authToken) {
+      loadGameWallet();
+      loadGameWalletBalances();
+    }
+  }, [authToken]);
+
+  useEffect(() => {
+    if (!wallet || !loginAddress) return;
+    if (wallet.toLowerCase() !== loginAddress.toLowerCase()) {
+      handleSignOut();
+    }
+  }, [wallet, loginAddress]);
+
+  useEffect(() => {
+    const address = gameWalletAddress || wallet;
+    if (!address) {
       setWalletBets([]);
       setAllBets([]);
       return;
     }
-    const address = wallet;
-    const register = async () => {
-      try {
-        await fetch("/api/wallets/register", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ address }),
-        });
-      } catch (e) {
-        console.error(e);
-      }
-    };
-    register();
     if (showPositions) {
       refreshWalletPositions(address);
     }
-  }, [wallet, showPositions]);
+  }, [wallet, gameWalletAddress, showPositions]);
 
   function isMasterpieceClosed(masterpiece: Masterpiece) {
     const dynamite = masterpiece.resources?.find((resource) => resource.symbol === "DYNAMITE");
@@ -579,6 +585,115 @@ export default function App() {
     }
   }
 
+  async function loadGameWallet() {
+    if (!authToken) return;
+    setGameWalletLoading(true);
+    setGameWalletError("");
+    try {
+      const r = await authFetch("/api/game-wallet");
+      const j = await r.json();
+      if (!r.ok || j?.ok !== true) {
+        throw new Error(j?.error || "Unable to load game wallet");
+      }
+      setLoginAddress(j.loginAddress);
+      setGameWalletAddress(j.gameWalletAddress);
+    } catch (e: any) {
+      setGameWalletError(e?.message || String(e));
+    } finally {
+      setGameWalletLoading(false);
+    }
+  }
+
+  async function loadGameWalletBalances() {
+    if (!authToken) return;
+    try {
+      const r = await authFetch("/api/game-wallet/balances");
+      const j = await r.json();
+      if (!r.ok || j?.ok !== true) {
+        throw new Error(j?.error || "Unable to load game wallet balances");
+      }
+      setGameWalletRon(j.ron);
+      setGameWalletDynw(j.dynw);
+    } catch (e: any) {
+      setGameWalletError(e?.message || String(e));
+    }
+  }
+
+  async function handleSignIn() {
+    if (!wallet || !walletProvider) {
+      setToast("Connect your wallet before signing in.");
+      return;
+    }
+    try {
+      setGameWalletError("");
+      const nonceRes = await fetch("/api/auth/nonce", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ address: wallet }),
+      });
+      const nonceJson = await nonceRes.json();
+      if (!nonceRes.ok || !nonceJson?.nonce) {
+        throw new Error(nonceJson?.error || "Unable to request nonce");
+      }
+      const message = `CraftWorld Bets sign-in\nAddress: ${wallet}\nNonce: ${nonceJson.nonce}`;
+      const signature = (await walletProvider.request({
+        method: "personal_sign",
+        params: [message, wallet],
+      })) as string;
+      const verifyRes = await fetch("/api/auth/verify", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ address: wallet, message, signature }),
+      });
+      const verifyJson = await verifyRes.json();
+      if (!verifyRes.ok || verifyJson?.ok !== true) {
+        throw new Error(verifyJson?.error || "Unable to verify signature");
+      }
+      setAuthToken(verifyJson.token);
+      setLoginAddress(verifyJson.address);
+      setToast("✅ Signed in with wallet.");
+    } catch (e: any) {
+      setToast(`❌ Sign-in failed. ${e?.message || String(e)}`);
+    }
+  }
+
+  function handleSignOut() {
+    setAuthToken("");
+    setLoginAddress(null);
+    setGameWalletAddress(null);
+    setGameWalletRon("0");
+    setGameWalletDynw("0");
+    setWithdrawStatus("");
+    setToast("Signed out.");
+  }
+
+  async function handleWithdraw() {
+    if (!withdrawAmount || Number(withdrawAmount) <= 0) {
+      setWithdrawStatus("Enter a valid withdrawal amount.");
+      return;
+    }
+    if (!authToken) {
+      setWithdrawStatus("Sign in before withdrawing.");
+      return;
+    }
+    setWithdrawStatus("Submitting withdrawal...");
+    try {
+      const r = await authFetch("/api/game-wallet/withdraw", {
+        method: "POST",
+        body: JSON.stringify({ token: withdrawToken, amount: withdrawAmount }),
+      });
+      const j = await r.json();
+      if (!r.ok || j?.ok !== true) {
+        throw new Error(j?.error || "Withdraw failed");
+      }
+      setWithdrawStatus(`✅ Withdrawal sent (${j.txHash}).`);
+      setWithdrawAmount("");
+      loadGameWalletBalances();
+    } catch (e: any) {
+      setWithdrawStatus(`❌ ${e?.message || String(e)}`);
+    }
+  }
+
   async function loadDynwUsdPrice() {
     try {
       const r = await fetch(
@@ -612,10 +727,14 @@ export default function App() {
   }, [activeTab, oddsLoading, oddsRows.length]);
 
   useEffect(() => {
+    if (loginAddress) {
+      setUsername(loginAddress);
+      return;
+    }
     if (wallet && !username) {
       setUsername(wallet);
     }
-  }, [wallet, username]);
+  }, [loginAddress, wallet, username]);
 
   const top100 = useMemo(() => (mp?.leaderboard || []).slice(0, 100), [mp]);
   const hasLiveBoard = top100.length > 0;
@@ -1075,64 +1194,6 @@ export default function App() {
     });
   }
 
-  async function signAndSendTransfer(to: string, rawAmount: bigint) {
-    if (!walletProvider || !wallet) throw new Error("Connect your wallet to sign the transaction.");
-    const data = encodeTransfer(to, rawAmount);
-    const tx: Record<string, string> = {
-      from: wallet,
-      to: COIN_CONTRACT,
-      data,
-      value: "0x0",
-    };
-
-    try {
-      const [gas, gasPrice] = await Promise.all([
-        walletProvider.request({ method: "eth_estimateGas", params: [tx] }),
-        walletProvider.request({ method: "eth_gasPrice", params: [] }),
-      ]);
-      if (gas) tx.gas = String(gas);
-      if (gasPrice) tx.gasPrice = String(gasPrice);
-    } catch {
-      // Gas estimation isn't required for all wallets/providers, so fallback gracefully.
-    }
-
-    const txHash = await walletProvider.request({
-      method: "eth_sendTransaction",
-      params: [tx],
-    });
-    return txHash as string;
-  }
-
-  async function waitForReceipt(txHash: string, timeoutMs = 180000) {
-    if (!walletProvider) throw new Error("Wallet provider not ready.");
-    const started = Date.now();
-    while (Date.now() - started < timeoutMs) {
-      const receipt = await walletProvider.request({
-        method: "eth_getTransactionReceipt",
-        params: [txHash],
-      });
-      if (receipt) return receipt as { status?: string; logs?: Array<{ topics?: string[]; data?: string }> };
-      await new Promise((resolve) => setTimeout(resolve, 2500));
-    }
-    throw new Error("Transaction confirmation timed out.");
-  }
-
-  async function confirmTransfer(txHash: string, to: string, expectedAmount: bigint) {
-    const receipt = await waitForReceipt(txHash);
-    if (!receipt?.status || receipt.status === "0x0") {
-      throw new Error("Transaction failed to confirm.");
-    }
-    const logs = receipt.logs || [];
-    const matched = findTransferAmount(logs, to);
-    if (matched === null) {
-      throw new Error("Transfer log not found for the expected recipient.");
-    }
-    if (matched !== expectedAmount) {
-      throw new Error("Transfer amount does not match the previewed bet.");
-    }
-    return receipt;
-  }
-
   async function previewBet(payload: {
     user: string;
     masterpieceId: number;
@@ -1144,9 +1205,8 @@ export default function App() {
     wagerAmount: number;
     futureBet: boolean;
   }) {
-    const r = await fetch("/api/bets/preview", {
+    const r = await authFetch("/api/bets/preview", {
       method: "POST",
-      headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     });
     const j = await r.json();
@@ -1157,8 +1217,8 @@ export default function App() {
   }
 
   async function finalizeBet() {
-    if (!username.trim()) {
-      setToast("Type a username first.");
+    if (!isSignedIn || !loginAddress) {
+      setToast("Sign in with your wallet to place a bet.");
       return;
     }
     if (bettingClosed) {
@@ -1169,39 +1229,23 @@ export default function App() {
       setToast("Pick a player before confirming.");
       return;
     }
-    if (!wallet) {
-      setToast("Connect your wallet to place a bet.");
-      return;
-    }
     if (!acknowledged) {
       setToast("Please acknowledge the betting terms to continue.");
       return;
     }
-    if (!hasEscrowAddress) {
-      setToast("Missing escrow address. Set VITE_BET_ESCROW_ADDRESS to accept bets.");
-      return;
-    }
-    if (!escrowAddressValid) {
-      setToast("Escrow address is invalid. Use a 0x contract address for VITE_BET_ESCROW_ADDRESS.");
-      return;
-    }
     setPlacing(true);
     setToast("");
-    let transfersConfirmed = false;
     try {
       let pendingId: string | null = null;
       const totalAmount = Math.floor(Number(amount));
       if (totalAmount <= 0) {
         throw new Error("Bet amount must be greater than zero.");
       }
-      const rawTotal = BigInt(totalAmount) * BigInt(10) ** BigInt(coinDecimals);
-      const rawFee = (rawTotal * BigInt(SERVICE_FEE_BPS)) / BigInt(10000);
-      const rawWager = rawTotal - rawFee;
       const feeAmount = Math.floor((totalAmount * SERVICE_FEE_BPS) / 10000);
       const wagerAmount = totalAmount - feeAmount;
 
       const preview = await previewBet({
-        user: username.trim(),
+        user: loginAddress,
         masterpieceId: mpId,
         position: selectedPos,
         pickedUid: pendingBet.pickedUid,
@@ -1212,11 +1256,10 @@ export default function App() {
         futureBet: pendingBet.type === "future",
       });
 
-      const pendingRes = await fetch("/api/bets/pending", {
+      const pendingRes = await authFetch("/api/bets/pending", {
         method: "POST",
-        headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          user: username.trim(),
+          user: loginAddress,
           masterpieceId: mpId,
           position: selectedPos,
           pickedUid: pendingBet.pickedUid,
@@ -1234,28 +1277,14 @@ export default function App() {
       }
       pendingId = pendingJson?.pendingId;
 
-      setToast("🧾 Please sign the service fee transfer in your wallet.");
-      const feeTx = await signAndSendTransfer(SERVICE_FEE_ADDRESS, rawFee);
-      setToast("⏳ Waiting for fee transfer confirmation...");
-      await confirmTransfer(feeTx, SERVICE_FEE_ADDRESS, rawFee);
-
-      setToast("🧾 Please sign the wager transfer in your wallet.");
-      const escrowTx = await signAndSendTransfer(escrowAddress, rawWager);
-      setToast("⏳ Waiting for wager transfer confirmation...");
-      await confirmTransfer(escrowTx, escrowAddress, rawWager);
-
-      transfersConfirmed = true;
+      setToast("⏳ Sending wager from your game wallet...");
       if (!pendingId) {
         throw new Error("Pending bet was not created. No funds were moved.");
       }
-      const r = await fetch("/api/bets/confirm", {
+      const r = await authFetch("/api/bets/confirm", {
         method: "POST",
-        headers: { "content-type": "application/json" },
         body: JSON.stringify({
           pendingId,
-          walletAddress: wallet,
-          escrowTx,
-          feeTx,
         }),
       });
 
@@ -1265,7 +1294,9 @@ export default function App() {
       }
 
       setToast(
-        `✅ Bet confirmed and funds received for ${username.trim()} → #${selectedPos} = ${preview.pickedName} (${fmt(
+        `✅ Bet confirmed from game wallet for ${shortAddress(loginAddress)} → #${selectedPos} = ${
+          preview.pickedName
+        } (${fmt(
           totalAmount
         )} ${COIN_SYMBOL})`
       );
@@ -1276,24 +1307,9 @@ export default function App() {
         setFutureMode(false);
       }
       loadBets(mpId);
+      loadGameWalletBalances();
     } catch (e: any) {
       const message = e?.message || String(e);
-      if (message && message.includes("User rejected")) {
-        setToast("❌ Bet canceled. No funds were moved.");
-        return;
-      }
-      if (message && message.includes("Transfer")) {
-        setToast(`❌ Bet failed. Please try again. ${message}`);
-        return;
-      }
-      if (message && message.includes("reserve")) {
-        setToast(`❌ Bet failed before transfer. No funds were moved. ${message}`);
-        return;
-      }
-      if (transfersConfirmed) {
-        setToast(`⚠️ Transfers confirmed, but the bet was not recorded. Please retry to finalize. ${message}`);
-        return;
-      }
       setToast(`❌ Bet failed. Please try again. ${message}`);
     } finally {
       setPlacing(false);
@@ -1554,6 +1570,16 @@ export default function App() {
               ? `Disconnect: ${wallet.slice(0, 6)}...${wallet.slice(-4)}`
               : "Connect Wallet"}
           </button>
+          {wallet && !isSignedIn && (
+            <button className="btn" onClick={handleSignIn}>
+              Sign in
+            </button>
+          )}
+          {isSignedIn && (
+            <button className="btn" onClick={handleSignOut}>
+              Sign out
+            </button>
+          )}
           {isWrongChain && (
             <div className="subtle">Wrong network detected. Switch to Ronin Mainnet (chain {RONIN_CHAIN.chainId}).</div>
           )}
@@ -1562,6 +1588,87 @@ export default function App() {
           )}
         </div>
       </header>
+
+      <section className="card game-wallet-card">
+        <div className="game-wallet-header">
+          <div>
+            <div className="eyebrow">Game Wallet</div>
+            <h2>In-app wallet for bets & swaps</h2>
+          </div>
+          <div className="status-pill">
+            {isSignedIn ? "Signed in" : "Not signed in"}
+          </div>
+        </div>
+        {!wallet && <p className="subtle">Connect your wallet and sign in to activate your game wallet.</p>}
+        {wallet && !isSignedIn && (
+          <p className="subtle">Sign in with your wallet to generate a game wallet address.</p>
+        )}
+        {gameWalletError && <div className="toast toast-error">{gameWalletError}</div>}
+        {isSignedIn && (
+          <div className="game-wallet-grid">
+            <div>
+              <label>Login wallet</label>
+              <div className="static-field">{loginAddress ? shortAddress(loginAddress) : "—"}</div>
+            </div>
+            <div>
+              <label>Game wallet address</label>
+              <div className="static-field">{gameWalletAddress || "Loading..."}</div>
+            </div>
+            <div>
+              <label>RON balance</label>
+              <div className="static-field">{gameWalletLoading ? "Loading..." : gameWalletRon}</div>
+            </div>
+            <div>
+              <label>DYNW balance</label>
+              <div className="static-field">{gameWalletLoading ? "Loading..." : gameWalletDynw}</div>
+            </div>
+            <div className="game-wallet-actions">
+              <label>Deposit instructions</label>
+              <div className="static-field">
+                Send RON or DYNW to the game wallet address.
+                <div className="subtle">Use the copy button to share the address.</div>
+              </div>
+              <div className="actions">
+                <button
+                  className="btn"
+                  onClick={() => {
+                    if (gameWalletAddress) {
+                      navigator.clipboard?.writeText(gameWalletAddress);
+                      setToast("Game wallet address copied.");
+                    }
+                  }}
+                  disabled={!gameWalletAddress}
+                >
+                  Copy address
+                </button>
+                <button className="btn btn-ghost" onClick={loadGameWalletBalances}>
+                  Refresh balances
+                </button>
+              </div>
+            </div>
+            <div className="game-wallet-actions">
+              <label>Withdraw</label>
+              <div className="game-wallet-withdraw">
+                <select value={withdrawToken} onChange={(e) => setWithdrawToken(e.target.value as "RON" | "DYNW")}>
+                  <option value="RON">RON</option>
+                  <option value="DYNW">DYNW</option>
+                </select>
+                <input
+                  value={withdrawAmount}
+                  onChange={(e) => setWithdrawAmount(e.target.value)}
+                  placeholder="Amount"
+                />
+              </div>
+              <div className="actions">
+                <button className="btn btn-primary" onClick={handleWithdraw}>
+                  Withdraw
+                </button>
+              </div>
+              {withdrawStatus && <div className="subtle">{withdrawStatus}</div>}
+            </div>
+          </div>
+        )}
+      </section>
 
       <div className="tabs">
         <button
@@ -1585,12 +1692,16 @@ export default function App() {
         <section className="card">
           <div className="grid-4">
             <div>
-              <label>Username (user-created)</label>
+              <label>Login wallet</label>
               <input
-                value={username}
+                value={isSignedIn && loginAddress ? loginAddress : username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="e.g. MattTheBookie"
+                placeholder="Sign in to auto-fill"
+                disabled={isSignedIn}
               />
+              <div className="subtle" style={{ marginTop: 6 }}>
+                Bets are attributed to your signed-in wallet address.
+              </div>
             </div>
 
             <div>
@@ -1613,11 +1724,6 @@ export default function App() {
               <div className="subtle" style={{ marginTop: 6 }}>
                 {fmt(wagerAmount)} {COIN_SYMBOL} wager + {fmt(feeAmount)} {COIN_SYMBOL} fee (5%)
               </div>
-              {!hasEscrowAddress && (
-                <div className="subtle" style={{ marginTop: 6 }}>
-                  Set <strong>VITE_BET_ESCROW_ADDRESS</strong> (a 0x contract address) to route wagers to escrow.
-                </div>
-              )}
               {hasEscrowAddress && !escrowAddressValid && (
                 <div className="subtle" style={{ marginTop: 6 }}>
                   Escrow address must be a valid 0x contract address.
@@ -2078,8 +2184,8 @@ export default function App() {
           <div className="section-title">Betting Terms</div>
           <ul className="terms-list">
             <li>
-              All bets are final once confirmed on-chain. No refunds, chargebacks, or reversals are possible after you
-              sign the transaction.
+              All bets are final once confirmed on-chain. Bets are funded from your game wallet after you confirm the
+              wager.
             </li>
             <li>
               A 5% service fee is deducted from each bet for server support and operations. The fee is sent to{" "}
@@ -2416,9 +2522,7 @@ export default function App() {
                   <div className="title">
                     {fmt(wagerAmount)} {COIN_SYMBOL}
                   </div>
-                <div className="subtle">
-                  Escrowed for payouts to {escrowAddress || "an escrow contract"}
-                </div>
+                  <div className="subtle">Escrowed for payouts to {escrowAddress || "an escrow contract"}</div>
                 </div>
                 <div>
                   <div className="label">Service Fee (5%)</div>
@@ -2431,8 +2535,8 @@ export default function App() {
 
               <div className="terms-box">
                 <p>
-                  By confirming, you authorize a token transfer from your wallet for the wager and service fee. Bets are
-                  final, non-refundable, and may not be canceled once the transaction is signed.
+                  By confirming, you authorize a token transfer from your game wallet for the wager and service fee.
+                  Bets are final, non-refundable, and may not be canceled once confirmed.
                 </p>
                 <p>
                   The escrow contract resolves the outcome and automatically pays winners after the masterpiece closes
@@ -2452,7 +2556,7 @@ export default function App() {
                 />
                 I acknowledge that all bets are final and I authorize the wager + 5% service fee.
               </label>
-              {!wallet && <div className="toast">Connect your wallet to sign the transaction.</div>}
+              {!isSignedIn && <div className="toast">Sign in to place the bet from your game wallet.</div>}
             </div>
             <div className="modal-actions">
               <button

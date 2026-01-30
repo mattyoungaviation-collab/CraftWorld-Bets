@@ -1,9 +1,13 @@
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import { fileURLToPath } from "url";
 import express from "express";
-import { Contract, JsonRpcProvider, Wallet } from "ethers";
+import jwt from "jsonwebtoken";
+import { Contract, JsonRpcProvider, Wallet, formatUnits, parseUnits, verifyMessage } from "ethers";
 import { makeStore, newId, settleMarket } from "./betting.js";
+import { encryptPrivateKey, decryptPrivateKey } from "./crypto.js";
+import { createGameWallet, getGameWalletForUser, getOrCreateUser } from "./db.js";
 import {
   loadBlackjackState,
   saveBlackjackState,
@@ -82,19 +86,28 @@ const SERVICE_FEE_BPS = 500;
 const VALIDATION_TTL_MS = 5 * 60 * 1000;
 const validations = new Map();
 const WALLET_BET_LIMIT = 1000;
-const GAME_WALLET_ADDRESS =
-  process.env.GAME_WALLET_ADDRESS || "0x1111111111111111111111111111111111111111";
-const GAME_WALLET_PRIVATE_KEY = process.env.GAME_WALLET_PRIVATE_KEY || "";
+const MASTER_KEY = process.env.MASTER_KEY || "";
+const JWT_SECRET = process.env.JWT_SECRET || "";
+const BET_MAX_AMOUNT = Number.isFinite(Number(process.env.BET_MAX_AMOUNT))
+  ? Number(process.env.BET_MAX_AMOUNT)
+  : null;
+const BET_ESCROW_ADDRESS = process.env.BET_ESCROW_ADDRESS || "";
+const SERVICE_FEE_ADDRESS = process.env.SERVICE_FEE_ADDRESS || "";
 const RONIN_RPC = process.env.RONIN_RPC || "https://api.roninchain.com/rpc";
 const KYBER_BASE_URL = process.env.KYBER_BASE_URL || "https://aggregator-api.kyberswap.com/ronin/api/v1";
 const KYBER_CLIENT_ID = process.env.KYBER_CLIENT_ID || "CraftWorldBets";
 const KYBER_NATIVE_TOKEN = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
-const DYNW_TOKEN_ADDRESS = "0x17ff4EA5dD318E5FAf7f5554667d65abEC96Ff57";
+const DYNW_TOKEN_ADDRESS = process.env.DYNW_TOKEN_ADDRESS || "0x17ff4EA5dD318E5FAf7f5554667d65abEC96Ff57";
+const WRON_ADDRESS = process.env.WRON_ADDRESS || "0xe514d9deb7966c8be0ca922de8a064264ea6bcd4";
+const DYNW_DECIMALS = 18;
 const ERC20_ABI = [
+  "function balanceOf(address owner) view returns (uint256)",
   "function allowance(address owner, address spender) view returns (uint256)",
   "function approve(address spender, uint256 amount) returns (bool)",
+  "function transfer(address to, uint256 amount) returns (bool)",
 ];
 const roninProvider = new JsonRpcProvider(RONIN_RPC);
+const authNonces = new Map();
 
 const MASTERPIECE_QUERY = `
   query Masterpiece($id: ID) {
@@ -198,6 +211,60 @@ function normalizeWallet(address) {
 
 function normalizeKyberAddress(address) {
   return normalizeWallet(address) || undefined;
+}
+
+function getAuthToken(req) {
+  const header = req.headers.authorization || "";
+  if (header.startsWith("Bearer ")) return header.slice(7);
+  const cookieHeader = req.headers.cookie;
+  if (cookieHeader) {
+    const match = cookieHeader.split(";").map((c) => c.trim()).find((c) => c.startsWith("cw_session="));
+    if (match) return match.split("=")[1];
+  }
+  return null;
+}
+
+function requireAuth(req, res, next) {
+  const token = getAuthToken(req);
+  if (!token) return res.status(401).json({ error: "Missing auth token" });
+  if (!JWT_SECRET) return res.status(500).json({ error: "JWT_SECRET is not configured" });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (!payload || typeof payload !== "object") {
+      return res.status(401).json({ error: "Invalid auth token" });
+    }
+    req.user = {
+      userId: payload.sub,
+      loginAddress: payload.loginAddress,
+    };
+    return next();
+  } catch (e) {
+    return res.status(401).json({ error: "Invalid auth token" });
+  }
+}
+
+async function getOrCreateUserWallet(loginAddress) {
+  const user = await getOrCreateUser(loginAddress);
+  let gameWallet = await getGameWalletForUser(user.id);
+  if (!gameWallet) {
+    if (!MASTER_KEY) {
+      throw new Error("MASTER_KEY is not configured");
+    }
+    const wallet = Wallet.createRandom();
+    const encrypted = encryptPrivateKey(wallet.privateKey, MASTER_KEY);
+    gameWallet = await createGameWallet({
+      userId: user.id,
+      address: wallet.address.toLowerCase(),
+      encryptedPrivateKey: JSON.stringify(encrypted),
+    });
+  }
+  return { user, gameWallet };
+}
+
+function requireConfiguredEnv(required, message) {
+  if (!required) {
+    throw new Error(message);
+  }
 }
 
 async function fetchKyber(pathname, { method = "GET", body } = {}) {
@@ -392,12 +459,136 @@ function attachBetToWallet(address, betId) {
 // ---- API routes FIRST ----
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-app.get("/api/game-wallet", (_req, res) => {
-  res.json({
-    ok: true,
-    address: GAME_WALLET_ADDRESS,
-    note: "TODO: replace with per-user game wallet assignment.",
-  });
+app.post("/api/auth/nonce", (req, res) => {
+  const address = normalizeWallet(req.body?.address);
+  if (!address) return res.status(400).json({ error: "address required" });
+  const nonce = crypto.randomBytes(16).toString("hex");
+  authNonces.set(address, { nonce, expiresAt: Date.now() + 5 * 60 * 1000 });
+  res.json({ nonce });
+});
+
+app.post("/api/auth/verify", async (req, res) => {
+  try {
+    requireConfiguredEnv(JWT_SECRET, "JWT_SECRET is not configured");
+    const address = normalizeWallet(req.body?.address);
+    const message = req.body?.message;
+    const signature = req.body?.signature;
+    if (!address || !message || !signature) {
+      return res.status(400).json({ error: "address, message, and signature are required" });
+    }
+    const record = authNonces.get(address);
+    if (!record || record.expiresAt < Date.now()) {
+      return res.status(400).json({ error: "nonce expired" });
+    }
+    if (!message.includes(record.nonce)) {
+      return res.status(400).json({ error: "nonce mismatch" });
+    }
+    if (!message.toLowerCase().includes(address.toLowerCase())) {
+      return res.status(400).json({ error: "message missing address" });
+    }
+    const signer = verifyMessage(message, signature);
+    if (normalizeWallet(signer) !== address) {
+      return res.status(401).json({ error: "signature does not match address" });
+    }
+    authNonces.delete(address);
+    const user = await getOrCreateUser(address);
+    const token = jwt.sign({ loginAddress: user.loginAddress }, JWT_SECRET, {
+      subject: user.id,
+      expiresIn: "7d",
+    });
+    res.json({ ok: true, address, token });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get("/api/game-wallet", requireAuth, async (req, res) => {
+  try {
+    const loginAddress = normalizeWallet(req.user?.loginAddress);
+    const userId = req.user?.userId || null;
+    if (!loginAddress) return res.status(400).json({ error: "invalid login address" });
+    const { gameWallet } = await getOrCreateUserWallet(loginAddress);
+    res.json({
+      ok: true,
+      loginAddress,
+      gameWalletAddress: gameWallet.address,
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get("/api/game-wallet/balances", requireAuth, async (req, res) => {
+  try {
+    const loginAddress = normalizeWallet(req.user?.loginAddress);
+    if (!loginAddress) return res.status(400).json({ error: "invalid login address" });
+    const { gameWallet } = await getOrCreateUserWallet(loginAddress);
+    const ronBalance = await roninProvider.getBalance(gameWallet.address);
+    const token = new Contract(DYNW_TOKEN_ADDRESS, ERC20_ABI, roninProvider);
+    const dynwBalance = await token.balanceOf(gameWallet.address);
+    res.json({
+      ok: true,
+      ron: formatUnits(ronBalance, 18),
+      dynw: formatUnits(dynwBalance, DYNW_DECIMALS),
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.post("/api/game-wallet/deposit-instructions", requireAuth, async (req, res) => {
+  try {
+    const loginAddress = normalizeWallet(req.user?.loginAddress);
+    if (!loginAddress) return res.status(400).json({ error: "invalid login address" });
+    const { gameWallet } = await getOrCreateUserWallet(loginAddress);
+    res.json({
+      ok: true,
+      gameWalletAddress: gameWallet.address,
+      tokens: ["RON", "DYNW"],
+      notes: "Send RON or DYNW to the game wallet address to fund in-app bets.",
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.post("/api/game-wallet/withdraw", requireAuth, async (req, res) => {
+  try {
+    const loginAddress = normalizeWallet(req.user?.loginAddress);
+    if (!loginAddress) return res.status(400).json({ error: "invalid login address" });
+    const token = String(req.body?.token || "").toUpperCase();
+    const amount = req.body?.amount;
+    const to = normalizeWallet(req.body?.to) || loginAddress;
+    if (!["RON", "DYNW"].includes(token)) {
+      return res.status(400).json({ error: "token must be RON or DYNW" });
+    }
+    if (!amount || Number(amount) <= 0) {
+      return res.status(400).json({ error: "amount must be positive" });
+    }
+    const { gameWallet } = await getOrCreateUserWallet(loginAddress);
+    if (!MASTER_KEY) return res.status(500).json({ error: "MASTER_KEY is not configured" });
+    const privateKey = decryptPrivateKey(gameWallet.encryptedPrivateKey, MASTER_KEY);
+    const signer = new Wallet(privateKey, roninProvider);
+
+    if (token === "RON") {
+      const value = parseUnits(String(amount), 18);
+      const balance = await roninProvider.getBalance(gameWallet.address);
+      if (balance < value) return res.status(400).json({ error: "insufficient RON balance" });
+      const tx = await signer.sendTransaction({ to, value });
+      const receipt = await tx.wait();
+      return res.json({ ok: true, txHash: tx.hash, status: receipt?.status ?? null });
+    }
+
+    const tokenContract = new Contract(DYNW_TOKEN_ADDRESS, ERC20_ABI, signer);
+    const value = parseUnits(String(amount), DYNW_DECIMALS);
+    const balance = await tokenContract.balanceOf(gameWallet.address);
+    if (balance < value) return res.status(400).json({ error: "insufficient DYNW balance" });
+    const tx = await tokenContract.transfer(to, value);
+    const receipt = await tx.wait();
+    return res.json({ ok: true, txHash: tx.hash, status: receipt?.status ?? null });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
 });
 
 app.post("/api/kyber/route/build", async (req, res) => {
@@ -445,14 +636,14 @@ app.post("/api/kyber/route/build", async (req, res) => {
   }
 });
 
-app.post("/api/game-wallet/swap", async (req, res) => {
+app.post("/api/game-wallet/swap", requireAuth, async (req, res) => {
   try {
     const { direction, amountIn, recipient, slippageTolerance, deadline } = req.body || {};
     if (!direction || !amountIn) {
       return res.status(400).json({ error: "direction and amountIn are required" });
     }
-    if (!GAME_WALLET_PRIVATE_KEY) {
-      return res.status(400).json({ error: "GAME_WALLET_PRIVATE_KEY is not configured" });
+    if (!MASTER_KEY) {
+      return res.status(500).json({ error: "MASTER_KEY is not configured" });
     }
 
     const amountInValue = BigInt(amountIn);
@@ -460,9 +651,19 @@ app.post("/api/game-wallet/swap", async (req, res) => {
       return res.status(400).json({ error: "Invalid swap amounts" });
     }
 
-    const wallet = new Wallet(GAME_WALLET_PRIVATE_KEY, roninProvider);
+    const loginAddress = normalizeWallet(req.user?.loginAddress);
+    if (!loginAddress) return res.status(400).json({ error: "invalid login address" });
+    const { gameWallet } = await getOrCreateUserWallet(loginAddress);
+    const privateKey = decryptPrivateKey(gameWallet.encryptedPrivateKey, MASTER_KEY);
+    const wallet = new Wallet(privateKey, roninProvider);
     const swapDeadline = Number(deadline) || Math.floor(Date.now() / 1000) + 10 * 60;
-    const toAddress = typeof recipient === "string" && recipient ? recipient : wallet.address;
+    let toAddress = null;
+    if (typeof recipient === "string" && recipient) {
+      toAddress = normalizeWallet(recipient);
+      if (!toAddress) return res.status(400).json({ error: "invalid recipient address" });
+    } else {
+      toAddress = direction === "DYNW_TO_RON" ? loginAddress : wallet.address;
+    }
     const slippageBps = Number.isFinite(Number(slippageTolerance)) ? Number(slippageTolerance) : 50;
 
     if (direction === "DYNW_TO_RON") {
@@ -792,10 +993,51 @@ function resolveAmounts({ amount, totalAmount, serviceFeeAmount, wagerAmount }) 
   };
 }
 
-async function validateBetPayload(body) {
-  const { user, masterpieceId, position, pickedUid, futureBet } = body || {};
+async function ensureDynwBalance(address, required) {
+  const token = new Contract(DYNW_TOKEN_ADDRESS, ERC20_ABI, roninProvider);
+  const balance = await token.balanceOf(address);
+  return balance >= required;
+}
 
-  if (!user || typeof user !== "string") return { error: "user required" };
+async function sendBetTransfers({ loginAddress, totalAmount, serviceFeeAmount, wagerAmount }) {
+  if (!BET_ESCROW_ADDRESS || !SERVICE_FEE_ADDRESS) {
+    throw new Error("BET_ESCROW_ADDRESS and SERVICE_FEE_ADDRESS must be configured");
+  }
+  if (!MASTER_KEY) {
+    throw new Error("MASTER_KEY is not configured");
+  }
+  const escrowAddress = normalizeWallet(BET_ESCROW_ADDRESS);
+  const feeAddress = normalizeWallet(SERVICE_FEE_ADDRESS);
+  if (!escrowAddress || !feeAddress) {
+    throw new Error("Escrow or service fee address is invalid");
+  }
+  const { gameWallet } = await getOrCreateUserWallet(loginAddress);
+  const totalRaw = parseUnits(String(totalAmount), DYNW_DECIMALS);
+  const feeRaw = parseUnits(String(serviceFeeAmount), DYNW_DECIMALS);
+  const wagerRaw = parseUnits(String(wagerAmount), DYNW_DECIMALS);
+
+  const hasBalance = await ensureDynwBalance(gameWallet.address, totalRaw);
+  if (!hasBalance) {
+    throw new Error("insufficient game wallet balance");
+  }
+
+  const privateKey = decryptPrivateKey(gameWallet.encryptedPrivateKey, MASTER_KEY);
+  const signer = new Wallet(privateKey, roninProvider);
+  const token = new Contract(DYNW_TOKEN_ADDRESS, ERC20_ABI, signer);
+  const feeTx = await token.transfer(feeAddress, feeRaw);
+  await feeTx.wait();
+  const escrowTx = await token.transfer(escrowAddress, wagerRaw);
+  await escrowTx.wait();
+  return {
+    feeTx: feeTx.hash,
+    escrowTx: escrowTx.hash,
+    gameWalletAddress: gameWallet.address,
+  };
+}
+
+async function validateBetPayload(body, loginAddress) {
+  const { masterpieceId, position, pickedUid, futureBet } = body || {};
+  if (!loginAddress) return { error: "loginAddress required" };
 
   const mpId = Number(masterpieceId);
   if (!Number.isInteger(mpId)) return { error: "masterpieceId must be integer" };
@@ -807,6 +1049,9 @@ async function validateBetPayload(body) {
 
   const amountCheck = resolveAmounts(body);
   if (amountCheck.error) return { error: amountCheck.error };
+  if (BET_MAX_AMOUNT !== null && amountCheck.wagerAmount > BET_MAX_AMOUNT) {
+    return { error: `bet exceeds max limit of ${BET_MAX_AMOUNT}` };
+  }
 
   let pickedName = pickedUid;
   let isClosed = false;
@@ -829,7 +1074,7 @@ async function validateBetPayload(body) {
   if (isClosed) return { error: "betting is closed for this masterpiece" };
 
   return {
-    user,
+    user: loginAddress,
     masterpieceId: mpId,
     position: pos,
     pickedUid,
@@ -839,9 +1084,10 @@ async function validateBetPayload(body) {
   };
 }
 
-app.post("/api/bets/preview", async (req, res) => {
+app.post("/api/bets/preview", requireAuth, async (req, res) => {
   try {
-    const validated = await validateBetPayload(req.body);
+    const loginAddress = normalizeWallet(req.user?.loginAddress);
+    const validated = await validateBetPayload(req.body, loginAddress);
     if (validated.error) return res.status(400).json({ error: validated.error });
 
     const validationId = newId();
@@ -856,10 +1102,12 @@ app.post("/api/bets/preview", async (req, res) => {
   }
 });
 
-app.post("/api/bets", async (req, res) => {
+app.post("/api/bets", requireAuth, async (req, res) => {
   try {
-    const { validationId, walletAddress, escrowTx, feeTx, totalAmount, serviceFeeAmount, wagerAmount } = req.body || {};
+    const { validationId, totalAmount, serviceFeeAmount, wagerAmount } = req.body || {};
     let validated = null;
+    const loginAddress = normalizeWallet(req.user?.loginAddress);
+    if (!loginAddress) return res.status(400).json({ error: "invalid login address" });
 
     if (validationId) {
       const record = validations.get(validationId);
@@ -871,7 +1119,7 @@ app.post("/api/bets", async (req, res) => {
       const payloadCheck = resolveAmounts({ amount: req.body?.amount, totalAmount, serviceFeeAmount, wagerAmount });
       if (payloadCheck.error) return res.status(400).json({ error: payloadCheck.error });
       const matches =
-        record.user === req.body?.user &&
+        record.user === loginAddress &&
         record.masterpieceId === Number(req.body?.masterpieceId) &&
         record.position === Number(req.body?.position) &&
         record.pickedUid === req.body?.pickedUid &&
@@ -882,13 +1130,22 @@ app.post("/api/bets", async (req, res) => {
       validated = { ...record, ...payloadCheck };
       validations.delete(validationId);
     } else {
-      validated = await validateBetPayload(req.body);
+      validated = await validateBetPayload(req.body, loginAddress);
       if (validated.error) return res.status(400).json({ error: validated.error });
     }
+
+    const transfer = await sendBetTransfers({
+      loginAddress,
+      totalAmount: validated.totalAmount,
+      serviceFeeAmount: validated.serviceFeeAmount,
+      wagerAmount: validated.wagerAmount,
+    });
 
     const bet = {
       id: newId(),
       user: validated.user,
+      userId,
+      loginAddress,
       masterpieceId: validated.masterpieceId,
       position: validated.position,
       pickedUid: validated.pickedUid,
@@ -897,9 +1154,10 @@ app.post("/api/bets", async (req, res) => {
       wagerAmount: validated.wagerAmount,
       totalAmount: validated.totalAmount,
       serviceFeeAmount: validated.serviceFeeAmount,
-      walletAddress: walletAddress || null,
-      escrowTx: escrowTx || null,
-      feeTx: feeTx || null,
+      walletAddress: transfer.gameWalletAddress,
+      gameWalletAddress: transfer.gameWalletAddress,
+      escrowTx: transfer.escrowTx,
+      feeTx: transfer.feeTx,
       createdAt: new Date().toISOString(),
       futureBet: validated.futureBet,
     };
@@ -916,10 +1174,13 @@ app.post("/api/bets", async (req, res) => {
   }
 });
 
-app.post("/api/bets/pending", async (req, res) => {
+app.post("/api/bets/pending", requireAuth, async (req, res) => {
   try {
     const { validationId, totalAmount, serviceFeeAmount, wagerAmount } = req.body || {};
     let validated = null;
+    const loginAddress = normalizeWallet(req.user?.loginAddress);
+    const userId = req.user?.userId || null;
+    if (!loginAddress) return res.status(400).json({ error: "invalid login address" });
 
     if (validationId) {
       const record = validations.get(validationId);
@@ -931,7 +1192,7 @@ app.post("/api/bets/pending", async (req, res) => {
       const payloadCheck = resolveAmounts({ amount: req.body?.amount, totalAmount, serviceFeeAmount, wagerAmount });
       if (payloadCheck.error) return res.status(400).json({ error: payloadCheck.error });
       const matches =
-        record.user === req.body?.user &&
+        record.user === loginAddress &&
         record.masterpieceId === Number(req.body?.masterpieceId) &&
         record.position === Number(req.body?.position) &&
         record.pickedUid === req.body?.pickedUid &&
@@ -942,13 +1203,15 @@ app.post("/api/bets/pending", async (req, res) => {
       validated = { ...record, ...payloadCheck };
       validations.delete(validationId);
     } else {
-      validated = await validateBetPayload(req.body);
+      validated = await validateBetPayload(req.body, loginAddress);
       if (validated.error) return res.status(400).json({ error: validated.error });
     }
 
     const pendingBet = {
       id: newId(),
       user: validated.user,
+      userId,
+      loginAddress,
       masterpieceId: validated.masterpieceId,
       position: validated.position,
       pickedUid: validated.pickedUid,
@@ -970,20 +1233,36 @@ app.post("/api/bets/pending", async (req, res) => {
   }
 });
 
-app.post("/api/bets/confirm", async (req, res) => {
+app.post("/api/bets/confirm", requireAuth, async (req, res) => {
   try {
-    const { pendingId, walletAddress, escrowTx, feeTx } = req.body || {};
+    const { pendingId } = req.body || {};
     if (!pendingId) return res.status(400).json({ error: "pendingId required" });
+    const loginAddress = normalizeWallet(req.user?.loginAddress);
+    const userId = req.user?.userId || null;
+    if (!loginAddress) return res.status(400).json({ error: "invalid login address" });
 
     const idx = store.pendingBets.findIndex((b) => b.id === pendingId);
     if (idx === -1) return res.status(400).json({ error: "pending bet not found" });
 
     const pendingBet = store.pendingBets[idx];
+    if (pendingBet.loginAddress && pendingBet.loginAddress !== loginAddress) {
+      return res.status(403).json({ error: "pending bet belongs to another user" });
+    }
+
+    const transfer = await sendBetTransfers({
+      loginAddress,
+      totalAmount: pendingBet.totalAmount,
+      serviceFeeAmount: pendingBet.serviceFeeAmount,
+      wagerAmount: pendingBet.wagerAmount,
+    });
     const bet = {
       ...pendingBet,
-      walletAddress: walletAddress || null,
-      escrowTx: escrowTx || null,
-      feeTx: feeTx || null,
+      walletAddress: transfer.gameWalletAddress,
+      gameWalletAddress: transfer.gameWalletAddress,
+      loginAddress,
+      userId,
+      escrowTx: transfer.escrowTx,
+      feeTx: transfer.feeTx,
     };
 
     store.pendingBets.splice(idx, 1);

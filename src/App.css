@@ -199,6 +199,39 @@ select {
   color: #64748b;
 }
 
+.game-wallet-card h2 {
+  margin: 6px 0 0;
+  font-size: 20px;
+}
+
+.game-wallet-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.game-wallet-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.game-wallet-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.game-wallet-withdraw {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 10px;
+}
+
 .summary-card .right {
   text-align: right;
 }

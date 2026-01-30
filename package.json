@@ -15,11 +15,13 @@
     "deploy:router": "node scripts/deploy-router.mjs"
   },
   "dependencies": {
-    "ethers": "^6.15.0",
     "@walletconnect/ethereum-provider": "^2.11.2",
     "@walletconnect/modal": "^2.7.0",
     "@reown/appkit": "^1.0.0",
+    "@prisma/client": "^5.22.0",
     "express": "^4.19.2",
+    "ethers": "^6.15.0",
+    "jsonwebtoken": "^9.0.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.26.2",
@@ -30,6 +32,7 @@
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
+    "prisma": "^5.22.0",
     "typescript": "^5.6.3",
     "vite": "^7.3.1"
   }
