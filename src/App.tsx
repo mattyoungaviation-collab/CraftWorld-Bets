@@ -189,8 +189,9 @@ function getHandTotals(cards: Card[]) {
     total -= 10;
     aces -= 1;
   }
-  const isSoft = cards.some((card) => card.rank === "A") && total <= 21 && cards.reduce((sum, c) => sum + c.value, 0) !== total;
-  return { total, isSoft, isBust: total > 21 };
+  const soft =
+    cards.some((card) => card.rank === "A") && total <= 21 && cards.reduce((sum, c) => sum + c.value, 0) !== total;
+  return { total, soft };
 }
 
 function isBlackjack(cards: Card[]) {
@@ -234,7 +235,7 @@ function simulateDealerHand(deck: Card[], dealerCards: Card[]) {
     const totals = getHandTotals(cards);
     if (totals.total > 21) break;
     if (totals.total > 17) break;
-    if (totals.total === 17 && !totals.isSoft) break;
+    if (totals.total === 17 && !totals.soft) break;
     if (deck.length === 0) break;
     cards.push(drawRandomCard(deck));
   }
@@ -246,7 +247,7 @@ function simulatePlayerHand(deck: Card[], playerCards: Card[], dealerUpcard: num
   while (true) {
     const totals = getHandTotals(cards);
     if (totals.total >= 21) break;
-    const decision = basicStrategyDecision(totals.total, totals.isSoft, dealerUpcard);
+    const decision = basicStrategyDecision(totals.total, totals.soft, dealerUpcard);
     if (decision === "stand") break;
     if (deck.length === 0) break;
     cards.push(drawRandomCard(deck));
@@ -1340,6 +1341,10 @@ export default function App() {
   const selectedSeat = useMemo(
     () => (selectedBlackjackSeatId !== null ? blackjackSeats.find((seat) => seat.id === selectedBlackjackSeatId) || null : null),
     [blackjackSeats, selectedBlackjackSeatId]
+  );
+  const activeSessionSeat = useMemo(
+    () => (blackjackSession ? blackjackSeats.find((seat) => seat.id === blackjackSession.seatId) || null : null),
+    [blackjackSession, blackjackSeats]
   );
 
   function applyBlackjackState(state: BlackjackState) {
