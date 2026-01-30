@@ -2159,7 +2159,10 @@ export default function App() {
           <div className="blackjack-seats">
             {blackjackSeats.map((seat, index) => {
               const odds = blackjackOdds[index];
-              const isOwner = seat.walletAddress && wallet ? seat.walletAddress === wallet : false;
+              const isOwner =
+                seat.walletAddress && wallet
+                  ? seat.walletAddress.toLowerCase() === wallet.toLowerCase()
+                  : false;
               const sessionForSeat =
                 isOwner && blackjackSession && blackjackSession.seatId === seat.id ? blackjackSession : null;
               const sessionBankrollWei = sessionForSeat?.bankrollWei ?? null;
@@ -2217,6 +2220,8 @@ export default function App() {
                           <div className="static-field">
                             {isOwner && sessionBankrollWei !== null
                               ? `${formatTokenAmount(sessionBankrollWei, DYNW_TOKEN.decimals)} ${COIN_SYMBOL}`
+                              : isOwner && blackjackVaultBalanceWei !== null
+                              ? `${formatTokenAmount(blackjackVaultBalanceWei, DYNW_TOKEN.decimals)} ${COIN_SYMBOL}`
                               : `${fmt(seat.bankroll)} ${COIN_SYMBOL}`}
                           </div>
                         </div>
