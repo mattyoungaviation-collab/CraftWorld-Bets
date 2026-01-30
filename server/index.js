@@ -97,7 +97,7 @@ function queueNextRoundIfNeeded() {
 function tryStartNextRound() {
   const now = Date.now();
   if (blackjackState.phase === "player" || blackjackState.phase === "dealer") return false;
-  if (!blackjackState.cooldownExpiresAt || blackjackState.cooldownExpiresAt > now) return false;
+  if (blackjackState.cooldownExpiresAt && blackjackState.cooldownExpiresAt > now) return false;
   const result = startRound(blackjackState);
   return !result.error;
 }
