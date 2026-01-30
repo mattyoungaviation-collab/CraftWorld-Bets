@@ -4,7 +4,16 @@ import crypto from "crypto";
 import { fileURLToPath } from "url";
 import express from "express";
 import jwt from "jsonwebtoken";
-import { Contract, JsonRpcProvider, Wallet, keccak256, parseUnits, toUtf8Bytes, verifyMessage } from "ethers";
+import {
+  Contract,
+  JsonRpcProvider,
+  Wallet,
+  formatUnits,
+  keccak256,
+  parseUnits,
+  toUtf8Bytes,
+  verifyMessage,
+} from "ethers";
 import { makeStore, newId, settleMarket } from "./betting.js";
 import { getOrCreateUser } from "./db.js";
 import {
@@ -21,8 +30,10 @@ import {
   splitHand,
   timeoutStand,
   resetRound,
+  BLACKJACK_MIN_BET,
   ROUND_COOLDOWN_MS,
 } from "./blackjack.js";
+import { buildBlackjackBetId, getVaultReadContract } from "./lib/vaultLedger.js";
 import { computeModelOdds } from "./odds.js";
 
 const app = express();
@@ -94,6 +105,9 @@ const OPERATOR_PRIVATE_KEY = process.env.OPERATOR_PRIVATE_KEY || "";
 const DYNW_DECIMALS = 18;
 const VAULT_LEDGER_ABI = [
   "function settleBet(bytes32 betId, address[] participants, uint256[] payouts)",
+  "function balances(address owner, address token) view returns (uint256)",
+  "function lockedBalances(address owner, address token) view returns (uint256)",
+  "function betStakes(bytes32 betId, address owner) view returns (uint256)",
 ];
 const roninProvider = new JsonRpcProvider(RONIN_RPC);
 const operatorSigner =
@@ -102,6 +116,7 @@ const vaultContract =
   operatorSigner && VAULT_LEDGER_ADDRESS
     ? new Contract(VAULT_LEDGER_ADDRESS, VAULT_LEDGER_ABI, operatorSigner)
     : null;
+const vaultReadContract = VAULT_LEDGER_ADDRESS ? getVaultReadContract(VAULT_LEDGER_ADDRESS, roninProvider) : null;
 const authNonces = new Map();
 
 const MASTERPIECE_QUERY = `
@@ -303,34 +318,36 @@ function addLedgerEntry(address, entry) {
   return record;
 }
 
-function syncWalletBalancesFromSeats() {
-  blackjackState.seats.forEach((seat) => {
-    if (!seat.joined || !seat.walletAddress) return;
-    const record = ensureWalletRecord(seat.walletAddress);
-    if (!record) return;
-    record.balance = Number(seat.bankroll || 0);
-  });
-}
-
-function applyBlackjackLedgerQueue() {
-  if (!Array.isArray(blackjackState.ledgerQueue) || blackjackState.ledgerQueue.length === 0) return;
-  blackjackState.ledgerQueue.forEach((entry) => {
-    if (!entry?.walletAddress) return;
-    addLedgerEntry(entry.walletAddress, {
-      type: entry.type || "adjustment",
-      amount: Number(entry.amount || 0),
-      seatId: entry.seatId ?? null,
-      handIndex: entry.handIndex ?? null,
-    });
-  });
-  blackjackState.ledgerQueue = [];
-}
-
 function persistBlackjackUpdates() {
-  applyBlackjackLedgerQueue();
-  syncWalletBalancesFromSeats();
-  persist();
   persistBlackjackState();
+}
+
+async function settleBlackjackQueue() {
+  if (!Array.isArray(blackjackState.settlementQueue) || blackjackState.settlementQueue.length === 0) {
+    return { ok: true, settlements: [] };
+  }
+  if (!vaultContract) {
+    throw new Error("VAULT_LEDGER_ADDRESS or OPERATOR_PRIVATE_KEY not configured");
+  }
+  const settlements = [];
+  const remaining = [];
+  for (const entry of blackjackState.settlementQueue) {
+    if (!entry?.betId || !entry?.walletAddress) {
+      continue;
+    }
+    try {
+      const payoutWei = parseUnits(String(entry.payoutAmount || 0), DYNW_DECIMALS);
+      const tx = await vaultContract.settleBet(entry.betId, [entry.walletAddress], [payoutWei]);
+      const receipt = await tx.wait();
+      settlements.push({ betId: entry.betId, txHash: tx.hash, status: receipt?.status ?? null });
+    } catch (e) {
+      console.error("Failed to settle blackjack bet", entry.betId, e);
+      remaining.push(entry);
+    }
+  }
+  blackjackState.settlementQueue = remaining;
+  persistBlackjackUpdates();
+  return { ok: true, settlements };
 }
 
 function requireSeatOwner(seatId, walletAddress) {
@@ -342,6 +359,30 @@ function requireSeatOwner(seatId, walletAddress) {
     return { error: "Seat is owned by a different wallet" };
   }
   return { ok: true, seat };
+}
+
+function requireLoginWallet(req, walletAddress) {
+  const normalized = normalizeWallet(walletAddress);
+  if (!normalized) return { error: "walletAddress required" };
+  const loginAddress = normalizeWallet(req.user?.loginAddress);
+  if (!loginAddress || normalized !== loginAddress) {
+    return { error: "walletAddress does not match signed-in wallet" };
+  }
+  return { ok: true, walletAddress: normalized };
+}
+
+async function fetchVaultBalance(walletAddress) {
+  if (!vaultReadContract) {
+    throw new Error("VAULT_LEDGER_ADDRESS is not configured");
+  }
+  return vaultReadContract.balances(walletAddress, DYNW_TOKEN_ADDRESS);
+}
+
+async function fetchVaultBetStake(betId, walletAddress) {
+  if (!vaultReadContract) {
+    throw new Error("VAULT_LEDGER_ADDRESS is not configured");
+  }
+  return vaultReadContract.betStakes(betId, walletAddress);
 }
 
 // ---- API routes FIRST ----
@@ -395,13 +436,76 @@ app.get("/api/blackjack/state", (_req, res) => {
   res.json({ ok: true, state: blackjackState });
 });
 
+app.get("/api/blackjack/balance", requireAuth, async (req, res) => {
+  try {
+    const walletAddress = normalizeWallet(req.query.wallet);
+    const authCheck = requireLoginWallet(req, walletAddress);
+    if (authCheck.error) return res.status(403).json({ error: authCheck.error });
+    const balance = await fetchVaultBalance(authCheck.walletAddress);
+    res.json({ ok: true, wallet: authCheck.walletAddress, balance: balance.toString() });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.post("/api/blackjack/bet", requireAuth, async (req, res) => {
+  try {
+    const seatId = Number(req.body?.seatId);
+    const betAmountWei = req.body?.betAmountWei;
+    const roundId = Number(req.body?.roundId);
+    if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
+    if (!Number.isInteger(roundId) || roundId <= 0) return res.status(400).json({ error: "roundId required" });
+    if (!betAmountWei || typeof betAmountWei !== "string") {
+      return res.status(400).json({ error: "betAmountWei required" });
+    }
+    const authCheck = requireLoginWallet(req, req.body?.walletAddress);
+    if (authCheck.error) return res.status(403).json({ error: authCheck.error });
+    const ownership = requireSeatOwner(seatId, authCheck.walletAddress);
+    if (ownership.error) return res.status(403).json({ error: ownership.error });
+    if (blackjackState.phase === "player" || blackjackState.phase === "dealer") {
+      return res.status(400).json({ error: "Cannot place bet mid-hand" });
+    }
+    if (blackjackState.roundId !== roundId) {
+      return res.status(400).json({ error: "roundId out of date" });
+    }
+    let betAmountRaw;
+    try {
+      betAmountRaw = BigInt(betAmountWei);
+    } catch {
+      return res.status(400).json({ error: "betAmountWei invalid" });
+    }
+    if (betAmountRaw <= 0n) return res.status(400).json({ error: "betAmountWei must be positive" });
+
+    const betId = buildBlackjackBetId(roundId, seatId, authCheck.walletAddress);
+    const stake = await fetchVaultBetStake(betId, authCheck.walletAddress);
+    if (BigInt(stake) < betAmountRaw) {
+      return res.status(400).json({ error: "Vault wager not detected" });
+    }
+
+    const betAmount = Number(formatUnits(betAmountRaw, DYNW_DECIMALS));
+    if (!Number.isFinite(betAmount) || betAmount <= 0) {
+      return res.status(400).json({ error: "Invalid bet amount" });
+    }
+
+    const seat = ownership.seat;
+    seat.pendingBetId = betId;
+    seat.pendingBetAmount = betAmount;
+    seat.pendingBetAmountWei = betAmountRaw.toString();
+    seat.pendingBetRoundId = roundId;
+    seat.readyForNextRound = true;
+    seat.bet = Math.max(BLACKJACK_MIN_BET, betAmount);
+    persistBlackjackUpdates();
+    return res.json({ ok: true, state: blackjackState, betId });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 app.post("/api/blackjack/join", (req, res) => {
   const seatId = Number(req.body?.seatId);
   if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
   const walletAddress = normalizeWallet(req.body?.walletAddress);
-  const walletRecord = walletAddress ? ensureWalletRecord(walletAddress) : null;
-  const bankrollOverride = walletRecord ? walletRecord.balance : null;
-  const result = joinSeat(blackjackState, seatId, req.body?.name, walletAddress, bankrollOverride);
+  const result = joinSeat(blackjackState, seatId, req.body?.name, walletAddress, null);
   if (result.error) return res.status(400).json({ error: result.error });
   queueNextRoundIfNeeded();
   persistBlackjackUpdates();
@@ -471,10 +575,39 @@ app.post("/api/blackjack/double", (req, res) => {
   if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
   const ownership = requireSeatOwner(seatId, req.body?.walletAddress);
   if (ownership.error) return res.status(403).json({ error: ownership.error });
-  const result = doubleDown(blackjackState, seatId);
-  if (result.error) return res.status(400).json({ error: result.error });
-  persistBlackjackUpdates();
-  return res.json({ ok: true, state: blackjackState });
+  const seat = ownership.seat;
+  const betAmountWei = req.body?.betAmountWei;
+  if (!seat.activeBetId || !seat.activeBetAmountWei) {
+    return res.status(400).json({ error: "No active vault wager for this seat" });
+  }
+  if (!betAmountWei || typeof betAmountWei !== "string") {
+    return res.status(400).json({ error: "betAmountWei required" });
+  }
+  let betAmountRaw;
+  try {
+    betAmountRaw = BigInt(betAmountWei);
+  } catch {
+    return res.status(400).json({ error: "betAmountWei invalid" });
+  }
+  const activeHandIndex = blackjackState.activeHand ?? 0;
+  const expectedBet = seat.bets[activeHandIndex] ?? seat.bet;
+  const expectedBetWei = parseUnits(String(expectedBet), DYNW_DECIMALS);
+  if (betAmountRaw !== expectedBetWei) {
+    return res.status(400).json({ error: "betAmountWei mismatch" });
+  }
+  fetchVaultBetStake(seat.activeBetId, seat.walletAddress)
+    .then((stake) => {
+      const requiredStake = BigInt(seat.activeBetAmountWei) + betAmountRaw;
+      if (BigInt(stake) < requiredStake) {
+        return res.status(400).json({ error: "Additional wager not detected" });
+      }
+      const result = doubleDown(blackjackState, seatId);
+      if (result.error) return res.status(400).json({ error: result.error });
+      seat.activeBetAmountWei = requiredStake.toString();
+      persistBlackjackUpdates();
+      return res.json({ ok: true, state: blackjackState });
+    })
+    .catch((e) => res.status(500).json({ error: String(e) }));
 });
 
 app.post("/api/blackjack/split", (req, res) => {
@@ -482,10 +615,39 @@ app.post("/api/blackjack/split", (req, res) => {
   if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
   const ownership = requireSeatOwner(seatId, req.body?.walletAddress);
   if (ownership.error) return res.status(403).json({ error: ownership.error });
-  const result = splitHand(blackjackState, seatId);
-  if (result.error) return res.status(400).json({ error: result.error });
-  persistBlackjackUpdates();
-  return res.json({ ok: true, state: blackjackState });
+  const seat = ownership.seat;
+  const betAmountWei = req.body?.betAmountWei;
+  if (!seat.activeBetId || !seat.activeBetAmountWei) {
+    return res.status(400).json({ error: "No active vault wager for this seat" });
+  }
+  if (!betAmountWei || typeof betAmountWei !== "string") {
+    return res.status(400).json({ error: "betAmountWei required" });
+  }
+  let betAmountRaw;
+  try {
+    betAmountRaw = BigInt(betAmountWei);
+  } catch {
+    return res.status(400).json({ error: "betAmountWei invalid" });
+  }
+  const activeHandIndex = blackjackState.activeHand ?? 0;
+  const expectedBet = seat.bets[activeHandIndex] ?? seat.bet;
+  const expectedBetWei = parseUnits(String(expectedBet), DYNW_DECIMALS);
+  if (betAmountRaw !== expectedBetWei) {
+    return res.status(400).json({ error: "betAmountWei mismatch" });
+  }
+  fetchVaultBetStake(seat.activeBetId, seat.walletAddress)
+    .then((stake) => {
+      const requiredStake = BigInt(seat.activeBetAmountWei) + betAmountRaw;
+      if (BigInt(stake) < requiredStake) {
+        return res.status(400).json({ error: "Additional wager not detected" });
+      }
+      const result = splitHand(blackjackState, seatId);
+      if (result.error) return res.status(400).json({ error: result.error });
+      seat.activeBetAmountWei = requiredStake.toString();
+      persistBlackjackUpdates();
+      return res.json({ ok: true, state: blackjackState });
+    })
+    .catch((e) => res.status(500).json({ error: String(e) }));
 });
 
 app.post("/api/blackjack/reset", (_req, res) => {
@@ -493,6 +655,15 @@ app.post("/api/blackjack/reset", (_req, res) => {
   if (result.error) return res.status(400).json({ error: result.error });
   persistBlackjackUpdates();
   return res.json({ ok: true, state: blackjackState });
+});
+
+app.post("/api/blackjack/settle", async (_req, res) => {
+  try {
+    const result = await settleBlackjackQueue();
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
 });
 
 app.get("/api/masterpiece/:id", async (req, res) => {
@@ -803,6 +974,9 @@ setInterval(() => {
   }
   if (changed) {
     persistBlackjackUpdates();
+  }
+  if (blackjackState.phase === "settled" && blackjackState.settlementQueue?.length) {
+    settleBlackjackQueue().catch((e) => console.error("Blackjack settlement error:", e));
   }
 }, 1000);
 
