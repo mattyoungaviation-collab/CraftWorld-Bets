@@ -20,6 +20,14 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const walletConnectProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined;
   const walletConnectEnabled = Boolean(walletConnectProjectId);
 
+  const normalizeAddress = useCallback((address: string | null) => {
+    if (!address) return null;
+    if (address.startsWith("ronin:")) {
+      return `0x${address.slice(6)}`;
+    }
+    return address;
+  }, []);
+
   const connectWallet = useCallback(async () => {
     if (!walletConnectProjectId) {
       throw new Error("Missing VITE_WALLETCONNECT_PROJECT_ID. Add it to your environment to use WalletConnect.");
@@ -46,13 +54,13 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     const acct = accounts?.[0];
     if (acct) {
       setProvider(wcProvider);
-      setWallet(acct);
+      setWallet(normalizeAddress(acct));
     }
     const chainHex = await wcProvider.request({ method: "eth_chainId", params: [] });
     if (typeof chainHex === "string") {
       setChainId(Number.parseInt(chainHex, 16));
     }
-  }, [walletConnectProjectId]);
+  }, [normalizeAddress, walletConnectProjectId]);
 
   const disconnectWallet = useCallback(async () => {
     if (provider?.disconnect) {
@@ -68,7 +76,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
     const handleAccountsChanged = (accounts: string[]) => {
       const next = accounts?.[0] || null;
-      setWallet(next);
+      setWallet(normalizeAddress(next));
       if (!next) setChainId(null);
     };
 
@@ -93,7 +101,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       provider.removeListener?.("chainChanged", handleChainChanged);
       provider.removeListener?.("disconnect", handleDisconnect);
     };
-  }, [provider]);
+  }, [normalizeAddress, provider]);
 
   const value = useMemo(
     () => ({
