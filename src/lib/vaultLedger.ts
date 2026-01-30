@@ -19,6 +19,10 @@ export function buildBlackjackBetId(roundId: number, seatId: number, walletAddre
   return id(`cw-blackjack:${roundId}:${seatId}:${walletAddress.toLowerCase()}`);
 }
 
+export function buildBlackjackSessionBetId(sessionId: string) {
+  return id(`cw-bj:${sessionId}`);
+}
+
 export async function getVaultContract(provider: any) {
   if (!provider || !VAULT_LEDGER_ADDRESS) return null;
   const browserProvider = new BrowserProvider(provider);

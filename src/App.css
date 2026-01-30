@@ -524,6 +524,13 @@ select {
 
 .seat-bet-field {
   position: relative;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.seat-bet-field input {
+  flex: 1;
 }
 
 .seat-bet-overlay {
