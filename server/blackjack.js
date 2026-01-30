@@ -354,6 +354,15 @@ export function joinSeat(state, seatId, name = "", walletAddress = null, bankrol
   const seat = state.seats.find((s) => s.id === seatId);
   if (!seat) return { error: "Seat not found" };
   if (seat.joined) return { error: "Seat already joined" };
+  if (walletAddress) {
+    const normalized = String(walletAddress).toLowerCase();
+    const existingSeat = state.seats.find(
+      (entry) => entry.joined && entry.walletAddress && entry.walletAddress.toLowerCase() === normalized
+    );
+    if (existingSeat) {
+      return { error: "Wallet already seated" };
+    }
+  }
   seat.joined = true;
   seat.status = "waiting";
   seat.pendingLeave = false;
@@ -373,6 +382,20 @@ export function joinSeat(state, seatId, name = "", walletAddress = null, bankrol
   appendLog(state, `Seat ${seatId + 1} joined the table.`);
   touch(state);
   return { ok: true };
+}
+
+export function clearSeatsForRestart(state) {
+  state.seats = state.seats.map((_, index) => createSeat(index));
+  state.phase = "idle";
+  state.activeSeat = null;
+  state.activeHand = null;
+  state.turnExpiresAt = null;
+  state.cooldownExpiresAt = null;
+  state.lastRoundResults = [];
+  state.activeRoundId = null;
+  state.updatedAt = new Date().toISOString();
+  appendLog(state, "Server restarted. Seats cleared.");
+  return state;
 }
 
 export function leaveSeat(state, seatId) {
