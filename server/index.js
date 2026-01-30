@@ -17,6 +17,7 @@ import { getOrCreateUser, prisma } from "./db.js";
 import {
   createDefaultBlackjackState,
   normalizeBlackjackState,
+  clearSeatsForRestart,
   joinSeat,
   leaveSeat,
   updateSeat,
@@ -61,7 +62,12 @@ const blackjackState = await loadBlackjackStateFromDb();
 
 async function loadBlackjackStateFromDb() {
   const record = await prisma.blackjackTableState.findUnique({ where: { id: blackjackTableId } });
-  if (record?.state) return normalizeBlackjackState(record.state);
+  if (record?.state) {
+    const state = normalizeBlackjackState(record.state);
+    clearSeatsForRestart(state);
+    await prisma.blackjackTableState.update({ where: { id: blackjackTableId }, data: { state } });
+    return state;
+  }
   const state = createDefaultBlackjackState();
   await prisma.blackjackTableState.create({ data: { id: blackjackTableId, state } });
   return state;
