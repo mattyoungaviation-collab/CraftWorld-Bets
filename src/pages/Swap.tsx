@@ -2,7 +2,7 @@ import { toBeHex } from "ethers";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import SiteFooter from "../components/SiteFooter";
-import { getRoninProvider, quoteOut } from "../lib/katana";
+import { quoteOut } from "../lib/katana";
 import { useDynwRonPool } from "../lib/useDynwRonPool";
 import { useRoninBalances } from "../lib/useRoninBalances";
 import {
