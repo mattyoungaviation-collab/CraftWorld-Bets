@@ -76,6 +76,17 @@ export default defineConfig([
 
 The API stores bets on disk. Set `BETS_DATA_DIR` to a persistent volume path (for example, `/var/data` on Render) so redeploys keep existing bets. If unset, the server falls back to `server/data`.
 
+## Running locally
+
+Install dependencies, then start the dev server:
+
+```bash
+npm install
+npm run dev
+```
+
+Make sure you have a `.env` file (or environment variables) configured with the values below so the swap UI and game-wallet flows can function.
+
 ## Smart contract payment routing
 
 The `contracts/BetPaymentRouter.sol` contract routes wager payments by splitting a total amount into a service fee and an escrow transfer. Configure the fee recipient, escrow recipient, and fee bps at deployment time, then call `routeTokenPayment` with the ERC-20 token address, total amount, and a bet id to emit an on-chain receipt.
@@ -137,8 +148,8 @@ Set a placeholder or per-user game wallet address with:
 - `GAME_WALLET_ADDRESS` – DYNW destination for game-wallet transfers (replace with real per-user assignment).
 - `GAME_WALLET_PRIVATE_KEY` – Private key for the game wallet signer (required for backend swaps from game wallet balances).
 - `RONIN_RPC` – Ronin RPC URL for server-side swap execution (defaults to `https://api.roninchain.com/rpc`).
-- `KATANA_ROUTER_ADDRESS` – Katana router address used by the server swap endpoint.
-- `WRON_ADDRESS` – Wrapped RON address used by the server swap endpoint.
+- `KYBER_BASE_URL` – Kyber aggregator base URL (defaults to `https://aggregator-api.kyberswap.com/ronin/api/v1`).
+- `KYBER_CLIENT_ID` – Optional Kyber client id for request headers (defaults to `CraftWorldBets`).
 
 ### Token assets
 

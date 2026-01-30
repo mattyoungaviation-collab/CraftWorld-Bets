@@ -86,18 +86,13 @@ const GAME_WALLET_ADDRESS =
   process.env.GAME_WALLET_ADDRESS || "0x1111111111111111111111111111111111111111";
 const GAME_WALLET_PRIVATE_KEY = process.env.GAME_WALLET_PRIVATE_KEY || "";
 const RONIN_RPC = process.env.RONIN_RPC || "https://api.roninchain.com/rpc";
-const KATANA_ROUTER_ADDRESS = process.env.KATANA_ROUTER_ADDRESS || "";
-const WRON_ADDRESS = process.env.WRON_ADDRESS || "";
+const KYBER_BASE_URL = process.env.KYBER_BASE_URL || "https://aggregator-api.kyberswap.com/ronin/api/v1";
+const KYBER_CLIENT_ID = process.env.KYBER_CLIENT_ID || "CraftWorldBets";
+const KYBER_NATIVE_TOKEN = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
 const DYNW_TOKEN_ADDRESS = "0x17ff4EA5dD318E5FAf7f5554667d65abEC96Ff57";
 const ERC20_ABI = [
   "function allowance(address owner, address spender) view returns (uint256)",
   "function approve(address spender, uint256 amount) returns (bool)",
-];
-const ROUTER_ABI = [
-  "function swapExactETHForTokens(uint amountOutMin, address[] path, address to, uint deadline) payable returns (uint[] amounts)",
-  "function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline) returns (uint[] amounts)",
-  "function swapExactETHForTokensSupportingFeeOnTransferTokens(uint amountOutMin, address[] path, address to, uint deadline) payable",
-  "function swapExactTokensForETHSupportingFeeOnTransferTokens(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline)",
 ];
 const roninProvider = new JsonRpcProvider(RONIN_RPC);
 
@@ -199,6 +194,71 @@ function normalizeWallet(address) {
     return `0x${trimmed.slice(6)}`;
   }
   return trimmed;
+}
+
+async function fetchKyber(pathname, { method = "GET", body } = {}) {
+  const response = await fetch(`${KYBER_BASE_URL}${pathname}`, {
+    method,
+    headers: {
+      ...(body ? { "content-type": "application/json" } : {}),
+      "X-Client-Id": KYBER_CLIENT_ID,
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = payload?.message || payload?.error || `Kyber request failed (${response.status})`;
+    throw new Error(message);
+  }
+  return payload;
+}
+
+function extractRouteSummary(routePayload) {
+  if (!routePayload) return null;
+  return (
+    routePayload?.data?.routeSummary ||
+    routePayload?.data?.routes?.[0]?.routeSummary ||
+    routePayload?.data?.route?.routeSummary ||
+    routePayload?.routeSummary ||
+    null
+  );
+}
+
+function extractBuildData(buildPayload) {
+  if (!buildPayload) return null;
+  return buildPayload?.data || buildPayload?.result || buildPayload;
+}
+
+async function buildKyberSwap({ tokenIn, tokenOut, amountIn, sender, recipient, slippageTolerance, deadline }) {
+  const params = new URLSearchParams({
+    tokenIn,
+    tokenOut,
+    amountIn,
+    saveGas: "false",
+    gasInclude: "true",
+    source: "CraftWorldBets",
+  });
+  const routePayload = await fetchKyber(`/routes?${params.toString()}`);
+  const routeSummary = extractRouteSummary(routePayload);
+  if (!routeSummary) {
+    throw new Error("Kyber route summary missing.");
+  }
+  const buildPayload = await fetchKyber("/route/build", {
+    method: "POST",
+    body: {
+      routeSummary,
+      sender,
+      recipient,
+      slippageTolerance,
+      deadline,
+      source: "CraftWorldBets",
+    },
+  });
+  const buildData = extractBuildData(buildPayload);
+  if (!buildData?.to || !buildData?.data) {
+    throw new Error("Kyber build data missing.");
+  }
+  return { buildData, routeSummary };
 }
 
 function ensureWalletRecord(address) {
@@ -323,67 +383,83 @@ app.get("/api/game-wallet", (_req, res) => {
   });
 });
 
+app.post("/api/kyber/route/build", async (req, res) => {
+  try {
+    const { tokenIn, tokenOut, amountIn, sender, recipient, slippageTolerance, deadline } = req.body || {};
+    if (!tokenIn || !tokenOut || !amountIn || !sender) {
+      return res.status(400).json({ error: "tokenIn, tokenOut, amountIn, and sender are required" });
+    }
+    const slippageBps = Number.isFinite(Number(slippageTolerance)) ? Number(slippageTolerance) : 50;
+    const result = await buildKyberSwap({
+      tokenIn,
+      tokenOut,
+      amountIn: amountIn.toString(),
+      sender,
+      recipient: recipient || sender,
+      slippageTolerance: slippageBps,
+      deadline,
+    });
+    return res.json({ ok: true, buildData: result.buildData, routeSummary: result.routeSummary });
+  } catch (e) {
+    return res.status(500).json({ error: String(e) });
+  }
+});
+
 app.post("/api/game-wallet/swap", async (req, res) => {
   try {
-    const { direction, amountIn, minOut, recipient, deadline } = req.body || {};
-    if (!direction || !amountIn || !minOut) {
-      return res.status(400).json({ error: "direction, amountIn, and minOut are required" });
-    }
-    if (!KATANA_ROUTER_ADDRESS || !WRON_ADDRESS) {
-      return res.status(400).json({ error: "Missing KATANA_ROUTER_ADDRESS or WRON_ADDRESS configuration" });
+    const { direction, amountIn, recipient, slippageTolerance, deadline } = req.body || {};
+    if (!direction || !amountIn) {
+      return res.status(400).json({ error: "direction and amountIn are required" });
     }
     if (!GAME_WALLET_PRIVATE_KEY) {
       return res.status(400).json({ error: "GAME_WALLET_PRIVATE_KEY is not configured" });
     }
 
     const amountInValue = BigInt(amountIn);
-    const minOutValue = BigInt(minOut);
-    if (amountInValue <= 0n || minOutValue < 0n) {
+    if (amountInValue <= 0n) {
       return res.status(400).json({ error: "Invalid swap amounts" });
     }
 
-    const [routerCode, wronCode] = await Promise.all([
-      roninProvider.getCode(KATANA_ROUTER_ADDRESS),
-      roninProvider.getCode(WRON_ADDRESS),
-    ]);
-    if (!routerCode || routerCode === "0x") {
-      return res.status(400).json({ error: "KATANA_ROUTER_ADDRESS does not point to a contract" });
-    }
-    if (!wronCode || wronCode === "0x") {
-      return res.status(400).json({ error: "WRON_ADDRESS does not point to a contract" });
-    }
-
     const wallet = new Wallet(GAME_WALLET_PRIVATE_KEY, roninProvider);
-    const router = new Contract(KATANA_ROUTER_ADDRESS, ROUTER_ABI, wallet);
     const swapDeadline = Number(deadline) || Math.floor(Date.now() / 1000) + 10 * 60;
     const toAddress = typeof recipient === "string" && recipient ? recipient : wallet.address;
+    const slippageBps = Number.isFinite(Number(slippageTolerance)) ? Number(slippageTolerance) : 50;
 
     if (direction === "DYNW_TO_RON") {
+      const { buildData } = await buildKyberSwap({
+        tokenIn: DYNW_TOKEN_ADDRESS,
+        tokenOut: KYBER_NATIVE_TOKEN,
+        amountIn: amountInValue.toString(),
+        sender: wallet.address,
+        recipient: toAddress,
+        slippageTolerance: slippageBps,
+        deadline: swapDeadline,
+      });
+      const approvalSpender = buildData.routerAddress || buildData.tokenApproveAddress || buildData.to;
       const token = new Contract(DYNW_TOKEN_ADDRESS, ERC20_ABI, wallet);
-      const allowance = await token.allowance(wallet.address, KATANA_ROUTER_ADDRESS);
+      const allowance = await token.allowance(wallet.address, approvalSpender);
       if (allowance < amountInValue) {
-        const approveTx = await token.approve(KATANA_ROUTER_ADDRESS, amountInValue);
+        const approveTx = await token.approve(approvalSpender, amountInValue);
         await approveTx.wait();
       }
-      const tx = await router.swapExactTokensForETHSupportingFeeOnTransferTokens(
-        amountInValue,
-        minOutValue,
-        [DYNW_TOKEN_ADDRESS, WRON_ADDRESS],
-        toAddress,
-        swapDeadline
-      );
+      const value = buildData?.value ? BigInt(buildData.value) : 0n;
+      const tx = await wallet.sendTransaction({ to: buildData.to, data: buildData.data, value });
       const receipt = await tx.wait();
       return res.json({ ok: true, txHash: tx.hash, status: receipt?.status ?? null });
     }
 
     if (direction === "RON_TO_DYNW") {
-      const tx = await router.swapExactETHForTokensSupportingFeeOnTransferTokens(
-        minOutValue,
-        [WRON_ADDRESS, DYNW_TOKEN_ADDRESS],
-        toAddress,
-        swapDeadline,
-        { value: amountInValue }
-      );
+      const { buildData } = await buildKyberSwap({
+        tokenIn: KYBER_NATIVE_TOKEN,
+        tokenOut: DYNW_TOKEN_ADDRESS,
+        amountIn: amountInValue.toString(),
+        sender: wallet.address,
+        recipient: toAddress,
+        slippageTolerance: slippageBps,
+        deadline: swapDeadline,
+      });
+      const value = buildData?.value ? BigInt(buildData.value) : 0n;
+      const tx = await wallet.sendTransaction({ to: buildData.to, data: buildData.data, value });
       const receipt = await tx.wait();
       return res.json({ ok: true, txHash: tx.hash, status: receipt?.status ?? null });
     }
