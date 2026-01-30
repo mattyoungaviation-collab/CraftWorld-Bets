@@ -1,19 +1,17 @@
-import { Interface, toBeHex } from "ethers";
+import { toBeHex } from "ethers";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import SiteFooter from "../components/SiteFooter";
-import { getDynwRonReserves, getRoninProvider, quoteOut } from "../lib/katana";
+import { getRoninProvider, quoteOut } from "../lib/katana";
 import { useDynwRonPool } from "../lib/useDynwRonPool";
 import { useRoninBalances } from "../lib/useRoninBalances";
 import {
   DEFAULT_SLIPPAGE,
   DYNW_TOKEN,
-  KATANA_ROUTER_ADDRESS,
   MAX_SLIPPAGE,
   MAX_SWAP_RON,
   RONIN_CHAIN,
   SWAP_DEADLINE_SECONDS,
-  WRON_TOKEN,
   formatUnits,
   parseUnits,
   shortAddress,
@@ -23,12 +21,7 @@ import { useWallet } from "../lib/wallet";
 const ERC20_ALLOWANCE = "0xdd62ed3e";
 const ERC20_APPROVE = "0x095ea7b3";
 const ERC20_TRANSFER = "0xa9059cbb";
-const ROUTER_ABI = [
-  "function swapExactETHForTokens(uint amountOutMin, address[] path, address to, uint deadline) payable returns (uint[] amounts)",
-  "function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline) returns (uint[] amounts)",
-  "function swapExactETHForTokensSupportingFeeOnTransferTokens(uint amountOutMin, address[] path, address to, uint deadline) payable",
-  "function swapExactTokensForETHSupportingFeeOnTransferTokens(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline)",
-];
+const KYBER_NATIVE_TOKEN = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
 
 function padAddress(address: string) {
   return address.toLowerCase().replace("0x", "").padStart(64, "0");
@@ -127,7 +120,7 @@ export default function Swap() {
     return value > maxDynwAllowed;
   }, [amountIn, direction, maxDynwAllowed]);
 
-  const missingConfig = !KATANA_ROUTER_ADDRESS || !WRON_TOKEN.address;
+  const missingConfig = false;
 
   useEffect(() => {
     const loadGameWallet = async () => {
@@ -219,30 +212,9 @@ export default function Swap() {
     }
 
     try {
-      const provider = getRoninProvider();
-      const [routerCode, wronCode] = await Promise.all([
-        provider.getCode(KATANA_ROUTER_ADDRESS),
-        provider.getCode(WRON_TOKEN.address),
-      ]);
-      if (!routerCode || routerCode === "0x") {
-        setSwapError("Katana router address is not a contract. Check VITE_KATANA_ROUTER_ADDRESS.");
-        return;
-      }
-      if (!wronCode || wronCode === "0x") {
-        setSwapError("WRON address is not a contract. Check VITE_WRON_ADDRESS.");
-        return;
-      }
       setSwapStatus("Refreshing pool...");
       await refreshPool();
-      const { reserveRon: reserveRonLatest, reserveDynw: reserveDynwLatest } = await getDynwRonReserves(provider);
-      const reserveIn = direction === "RON_TO_DYNW" ? reserveRonLatest : reserveDynwLatest;
-      const reserveOut = direction === "RON_TO_DYNW" ? reserveDynwLatest : reserveRonLatest;
-      const expectedOut = quoteOut(amountParsed, reserveIn, reserveOut);
-      const minOut = (expectedOut * (10_000n - BigInt(slippageBps))) / 10_000n;
-      const path =
-        direction === "RON_TO_DYNW" ? [WRON_TOKEN.address, DYNW_TOKEN.address] : [DYNW_TOKEN.address, WRON_TOKEN.address];
       const deadline = Math.floor(Date.now() / 1000) + SWAP_DEADLINE_SECONDS;
-      const iface = new Interface(ROUTER_ABI);
 
       if (direction === "DYNW_TO_RON" && swapFromGameWallet) {
         if (!gameWalletAddress) {
@@ -256,7 +228,7 @@ export default function Swap() {
           body: JSON.stringify({
             direction: "DYNW_TO_RON",
             amountIn: amountParsed.toString(),
-            minOut: minOut.toString(),
+            slippageTolerance: slippageBps,
             recipient: wallet,
             deadline,
           }),
@@ -275,10 +247,37 @@ export default function Swap() {
         return;
       }
 
+      const swapRecipient =
+        direction === "RON_TO_DYNW" && sendToGameWallet && gameWalletAddress ? gameWalletAddress : wallet;
+      const tokenIn = direction === "RON_TO_DYNW" ? KYBER_NATIVE_TOKEN : DYNW_TOKEN.address;
+      const tokenOut = direction === "RON_TO_DYNW" ? DYNW_TOKEN.address : KYBER_NATIVE_TOKEN;
+      setSwapStatus("Building Kyber route...");
+      const buildResponse = await fetch("/api/kyber/route/build", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          tokenIn,
+          tokenOut,
+          amountIn: amountParsed.toString(),
+          sender: wallet,
+          recipient: swapRecipient,
+          slippageTolerance: slippageBps,
+          deadline,
+        }),
+      });
+      const buildPayload = await buildResponse.json();
+      if (!buildResponse.ok) {
+        throw new Error(buildPayload?.error || "Failed to build Kyber route.");
+      }
+      const buildData = buildPayload?.buildData;
+      if (!buildData?.to || !buildData?.data) {
+        throw new Error("Kyber build data is missing transaction details.");
+      }
+      const approvalSpender = buildData.routerAddress || buildData.tokenApproveAddress || buildData.to;
       if (direction === "DYNW_TO_RON") {
         const allowanceHex = await walletProvider.request({
           method: "eth_call",
-          params: [{ to: DYNW_TOKEN.address, data: encodeAllowance(wallet, KATANA_ROUTER_ADDRESS) }, "latest"],
+          params: [{ to: DYNW_TOKEN.address, data: encodeAllowance(wallet, approvalSpender) }, "latest"],
         });
         const allowance = BigInt(allowanceHex);
         if (allowance < amountParsed) {
@@ -289,7 +288,7 @@ export default function Swap() {
               {
                 from: wallet,
                 to: DYNW_TOKEN.address,
-                data: encodeApprove(KATANA_ROUTER_ADDRESS, amountParsed),
+                data: encodeApprove(approvalSpender, amountParsed),
                 value: "0x0",
               },
             ],
@@ -299,31 +298,15 @@ export default function Swap() {
       }
 
       setSwapStatus("Signing swap transaction...");
-      const swapRecipient =
-        direction === "RON_TO_DYNW" && sendToGameWallet && gameWalletAddress ? gameWalletAddress : wallet;
-      const data =
-        direction === "RON_TO_DYNW"
-          ? iface.encodeFunctionData("swapExactETHForTokensSupportingFeeOnTransferTokens", [
-              minOut,
-              path,
-              swapRecipient,
-              deadline,
-            ])
-          : iface.encodeFunctionData("swapExactTokensForETHSupportingFeeOnTransferTokens", [
-              amountParsed,
-              minOut,
-              path,
-              wallet,
-              deadline,
-            ]);
+      const value = buildData?.value ? BigInt(buildData.value) : 0n;
       const txHash = await walletProvider.request({
         method: "eth_sendTransaction",
         params: [
           {
             from: wallet,
-            to: KATANA_ROUTER_ADDRESS,
-            data,
-            value: direction === "RON_TO_DYNW" ? toBeHex(amountParsed) : "0x0",
+            to: buildData.to,
+            data: buildData.data,
+            value: toBeHex(value),
           },
         ],
       });
@@ -331,8 +314,10 @@ export default function Swap() {
       setSwapStatus("Swap confirmed on-chain.");
       await refreshBalances();
       if (direction === "RON_TO_DYNW" && (!sendToGameWallet || !gameWalletAddress)) {
-        setPromptTransferAmount(minOut);
-        setTransferAmount(formatUnits(minOut, DYNW_TOKEN.decimals));
+        if (minReceived) {
+          setPromptTransferAmount(minReceived);
+          setTransferAmount(formatUnits(minReceived, DYNW_TOKEN.decimals));
+        }
       }
     } catch (e: any) {
       setSwapError(e?.message || String(e));
