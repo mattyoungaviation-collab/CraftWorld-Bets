@@ -544,10 +544,6 @@ app.post("/api/blackjack/buyin", requireAuth, async (req, res) => {
     const authCheck = requireLoginWallet(req, req.user?.loginAddress);
     if (authCheck.error) return res.status(403).json({ error: authCheck.error });
     const walletAddress = authCheck.walletAddress;
-    const vaultBalance = await fetchVaultBalance(walletAddress);
-    if (desiredAmountWei > BigInt(vaultBalance)) {
-      return res.status(400).json({ error: "Buy-in exceeds vault balance" });
-    }
     let session = await getActiveBlackjackSession(walletAddress);
     if (!session) session = await getPendingBlackjackSession(walletAddress);
 
@@ -567,6 +563,10 @@ app.post("/api/blackjack/buyin", requireAuth, async (req, res) => {
     }
 
     if (!session) {
+      const vaultBalance = await fetchVaultBalance(walletAddress);
+      if (desiredAmountWei > BigInt(vaultBalance)) {
+        return res.status(400).json({ error: "Buy-in exceeds vault balance" });
+      }
       session = await prisma.blackjackSession.create({
         data: {
           walletAddress,
@@ -578,13 +578,18 @@ app.post("/api/blackjack/buyin", requireAuth, async (req, res) => {
           netPnlWei: 0n,
         },
       });
-    } else if (desiredAmountWei < session.buyInWei) {
-      return res.status(400).json({ error: "Buy-in cannot be decreased" });
     }
-
     const betId = buildBlackjackSessionBetId(session.id);
     const stake = await fetchVaultBetStake(betId, walletAddress);
     const stakeWei = BigInt(stake);
+    const vaultBalance = await fetchVaultBalance(walletAddress);
+    const availableBalanceWei = BigInt(vaultBalance) + stakeWei;
+    if (desiredAmountWei > availableBalanceWei) {
+      return res.status(400).json({ error: "Buy-in exceeds vault balance" });
+    }
+    if (desiredAmountWei < session.buyInWei) {
+      return res.status(400).json({ error: "Buy-in cannot be decreased" });
+    }
     const needsStake = stakeWei < desiredAmountWei;
     const missingStakeWei = needsStake ? desiredAmountWei - stakeWei : 0n;
 

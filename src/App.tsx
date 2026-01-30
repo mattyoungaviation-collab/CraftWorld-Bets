@@ -2167,6 +2167,8 @@ export default function App() {
                 isOwner && blackjackSession && blackjackSession.seatId === seat.id ? blackjackSession : null;
               const sessionBankrollWei = sessionForSeat?.bankrollWei ?? null;
               const hasActiveSession = sessionForSeat?.status === "active";
+              const sessionBuyInWei = sessionForSeat?.buyInWei ?? null;
+              const sessionCommittedWei = sessionForSeat?.committedWei ?? null;
               const isActive = blackjackActiveSeat === index && blackjackPhase === "player";
               const activeHandIndex = isActive ? blackjackActiveHand ?? seat.activeHand : seat.activeHand;
               const activeHand = seat.hands[activeHandIndex] || [];
@@ -2194,7 +2196,7 @@ export default function App() {
                     </div>
                     {seat.joined ? (
                       <button className="btn btn-ghost" onClick={() => leaveSeat()} disabled={!isOwner}>
-                        {seat.pendingLeave ? "Leaving..." : "Leave"}
+                        {seat.pendingLeave ? "Leaving..." : "Leave & settle"}
                       </button>
                     ) : (
                       <button className="btn btn-primary" onClick={() => joinSeat(seat.id)}>
@@ -2225,9 +2227,25 @@ export default function App() {
                               : `${fmt(seat.bankroll)} ${COIN_SYMBOL}`}
                           </div>
                         </div>
+                        {isOwner && sessionBuyInWei !== null && (
+                          <div>
+                            <label>Current buy-in</label>
+                            <div className="static-field">
+                              {formatTokenAmount(sessionBuyInWei, DYNW_TOKEN.decimals)} {COIN_SYMBOL}
+                            </div>
+                          </div>
+                        )}
+                        {isOwner && sessionCommittedWei !== null && (
+                          <div>
+                            <label>Committed wager</label>
+                            <div className="static-field">
+                              {formatTokenAmount(sessionCommittedWei, DYNW_TOKEN.decimals)} {COIN_SYMBOL}
+                            </div>
+                          </div>
+                        )}
                         {isOwner && !hasActiveSession && (
                           <div>
-                            <label>Buy-in</label>
+                            <label>Buy-in amount</label>
                             <div className="seat-bet-field">
                               <input
                                 type="number"
