@@ -478,7 +478,7 @@ export default function Swap() {
             </div>
           </div>
         </div>
-        {promptTransferAmount && (
+        {promptTransferAmount !== null && promptTransferAmount > 0n && (
           <div className="transfer-card">
             <div className="section-title">Send DYNW to game wallet?</div>
             <div className="subtle">
