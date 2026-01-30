@@ -531,6 +531,9 @@ select {
 
 .seat-bet-field input {
   flex: 1;
+  min-width: 160px;
+  padding: 10px 12px;
+  font-size: 14px;
 }
 
 .seat-bet-overlay {

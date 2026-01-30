@@ -427,6 +427,8 @@ export default function App() {
   const [blackjackVaultStatus, setBlackjackVaultStatus] = useState("");
   const [blackjackSession, setBlackjackSession] = useState<BlackjackSession | null>(null);
   const [blackjackBuyIn, setBlackjackBuyIn] = useState("");
+  const [blackjackBuyInDirty, setBlackjackBuyInDirty] = useState(false);
+  const blackjackSessionIdRef = useRef<string | null>(null);
   const [blackjackSettlementStatus, setBlackjackSettlementStatus] = useState("");
   const [blackjackNow, setBlackjackNow] = useState(() => Date.now());
   const settlementToastRef = useRef<number | null>(null);
@@ -1376,6 +1378,10 @@ export default function App() {
       return simulateOdds(blackjackOddsDeck, hand, upcard);
     });
   }, [blackjackSeats, blackjackDealer, blackjackOddsDeck]);
+  const activeSessionSeat = useMemo(() => {
+    if (!blackjackSession) return null;
+    return blackjackSeats.find((seat) => seat.id === blackjackSession.seatId) || null;
+  }, [blackjackSession, blackjackSeats]);
 
   function applyBlackjackState(state: BlackjackState) {
     setBlackjackSeats(state.seats);
@@ -1403,6 +1409,9 @@ export default function App() {
   async function fetchBlackjackSession() {
     if (!wallet || !isSignedIn) {
       setBlackjackSession(null);
+      blackjackSessionIdRef.current = null;
+      setBlackjackBuyIn("");
+      setBlackjackBuyInDirty(false);
       return;
     }
     try {
@@ -1414,12 +1423,23 @@ export default function App() {
       const session = parseBlackjackSession(j.session);
       setBlackjackSession(session);
       if (session) {
-        setBlackjackBuyIn(formatUnits(session.buyInWei, DYNW_TOKEN.decimals));
+        const sessionIdChanged = blackjackSessionIdRef.current !== session.id;
+        blackjackSessionIdRef.current = session.id;
+        if (sessionIdChanged || !blackjackBuyInDirty) {
+          setBlackjackBuyIn(formatUnits(session.buyInWei, DYNW_TOKEN.decimals));
+          if (sessionIdChanged) {
+            setBlackjackBuyInDirty(false);
+          }
+        }
         setBlackjackSeats((prev) =>
           prev.map((seat) =>
             seat.id === session.seatId ? { ...seat, bankroll: Number(formatUnits(session.bankrollWei, DYNW_TOKEN.decimals)) } : seat
           )
         );
+      } else {
+        blackjackSessionIdRef.current = null;
+        setBlackjackBuyIn("");
+        setBlackjackBuyInDirty(false);
       }
     } catch (e) {
       console.error(e);
@@ -1538,6 +1558,8 @@ export default function App() {
         setBlackjackSettlementStatus("✅ Session closed.");
       }
       setBlackjackSession(null);
+      setBlackjackBuyIn("");
+      setBlackjackBuyInDirty(false);
       refreshBlackjackVaultBalance(wallet);
     } catch (e: any) {
       setBlackjackVaultStatus(`❌ ${e?.message || String(e)}`);
@@ -1592,6 +1614,7 @@ export default function App() {
         }
       }
       setBlackjackVaultStatus("✅ Table buy-in ready.");
+      setBlackjackBuyInDirty(false);
       refreshBlackjackVaultBalance(wallet);
     } catch (e: any) {
       setBlackjackVaultStatus(`❌ ${e?.message || String(e)}`);
@@ -2079,6 +2102,11 @@ export default function App() {
               >
                 Reset Round
               </button>
+              {blackjackSession && (
+                <button className="btn btn-ghost" onClick={() => leaveSeat()} disabled={activeSessionSeat?.status === "playing"}>
+                  Leave & settle
+                </button>
+              )}
             </div>
           </div>
 
@@ -2167,6 +2195,8 @@ export default function App() {
                 isOwner && blackjackSession && blackjackSession.seatId === seat.id ? blackjackSession : null;
               const sessionBankrollWei = sessionForSeat?.bankrollWei ?? null;
               const hasActiveSession = sessionForSeat?.status === "active";
+              const sessionBuyInWei = sessionForSeat?.buyInWei ?? null;
+              const sessionCommittedWei = sessionForSeat?.committedWei ?? null;
               const isActive = blackjackActiveSeat === index && blackjackPhase === "player";
               const activeHandIndex = isActive ? blackjackActiveHand ?? seat.activeHand : seat.activeHand;
               const activeHand = seat.hands[activeHandIndex] || [];
@@ -2194,7 +2224,7 @@ export default function App() {
                     </div>
                     {seat.joined ? (
                       <button className="btn btn-ghost" onClick={() => leaveSeat()} disabled={!isOwner}>
-                        {seat.pendingLeave ? "Leaving..." : "Leave"}
+                        {seat.pendingLeave ? "Leaving..." : "Leave & settle"}
                       </button>
                     ) : (
                       <button className="btn btn-primary" onClick={() => joinSeat(seat.id)}>
@@ -2225,15 +2255,34 @@ export default function App() {
                               : `${fmt(seat.bankroll)} ${COIN_SYMBOL}`}
                           </div>
                         </div>
+                        {isOwner && sessionBuyInWei !== null && (
+                          <div>
+                            <label>Current buy-in</label>
+                            <div className="static-field">
+                              {formatTokenAmount(sessionBuyInWei, DYNW_TOKEN.decimals)} {COIN_SYMBOL}
+                            </div>
+                          </div>
+                        )}
+                        {isOwner && sessionCommittedWei !== null && (
+                          <div>
+                            <label>Committed wager</label>
+                            <div className="static-field">
+                              {formatTokenAmount(sessionCommittedWei, DYNW_TOKEN.decimals)} {COIN_SYMBOL}
+                            </div>
+                          </div>
+                        )}
                         {isOwner && !hasActiveSession && (
                           <div>
-                            <label>Buy-in</label>
+                            <label>Buy-in amount</label>
                             <div className="seat-bet-field">
                               <input
                                 type="number"
                                 min={BLACKJACK_MIN_BET}
                                 value={blackjackBuyIn}
-                                onChange={(e) => setBlackjackBuyIn(e.target.value)}
+                                onChange={(e) => {
+                                  setBlackjackBuyIn(e.target.value);
+                                  setBlackjackBuyInDirty(true);
+                                }}
                                 placeholder={`${BLACKJACK_MIN_BET}+`}
                                 disabled={blackjackPhase === "player" || blackjackPhase === "dealer"}
                               />
