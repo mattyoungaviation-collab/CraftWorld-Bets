@@ -341,6 +341,7 @@ function isValidAddress(address?: string | null) {
 
 export default function App() {
   const [username, setUsername] = useState(() => localStorage.getItem("cw_bets_user") || "");
+  const COIN_CONTRACT = import.meta.env.VITE_COIN_CONTRACT || "";
   const { wallet, provider: walletProvider, chainId, connectWallet, disconnectWallet, walletConnectEnabled } =
     useWallet();
   const [authToken, setAuthToken] = useState(() => localStorage.getItem("cw_bets_token") || "");
