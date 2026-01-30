@@ -18,7 +18,7 @@
     "@walletconnect/ethereum-provider": "^2.11.2",
     "@walletconnect/modal": "^2.7.0",
     "@reown/appkit": "^1.0.0",
-    "@prisma/client": "^5.22.0",
+    "@prisma/client": "6.15.0",
     "express": "^4.19.2",
     "ethers": "^6.15.0",
     "jsonwebtoken": "^9.0.2",
