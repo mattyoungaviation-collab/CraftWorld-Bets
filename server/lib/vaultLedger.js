@@ -14,3 +14,7 @@ export function getVaultReadContract(address, provider) {
 export function buildBlackjackBetId(roundId, seatId, walletAddress) {
   return keccak256(toUtf8Bytes(`cw-blackjack:${roundId}:${seatId}:${walletAddress.toLowerCase()}`));
 }
+
+export function buildBlackjackSessionBetId(sessionId) {
+  return keccak256(toUtf8Bytes(`cw-bj:${sessionId}`));
+}

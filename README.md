@@ -191,6 +191,35 @@ Set the server environment variables for settlement and betting:
 - `FEE_RECIPIENT` – Fee recipient address used at contract deployment.
 - `FEE_BPS` – Fee in basis points used at contract deployment.
 
+### Blackjack session API (smoke)
+
+Use a signed-in JWT (`$TOKEN`) and a wallet address (`$WALLET`) to exercise the blackjack flow:
+
+```bash
+# Buy in (server will return a betId; lock the buy-in on-chain with placeBet)
+curl -s -X POST http://localhost:3000/api/blackjack/buyin \\
+  -H "content-type: application/json" \\
+  -H "authorization: Bearer $TOKEN" \\
+  -d '{"amountWei":"1000000000000000000","seatId":0}'
+
+# Deal a hand with the current wager amount
+curl -s -X POST http://localhost:3000/api/blackjack/deal \\
+  -H "content-type: application/json" \\
+  -H "authorization: Bearer $TOKEN" \\
+  -d '{"amountWei":"25000000000000000000"}'
+
+# Perform an action (hit/stand/double/split)
+curl -s -X POST http://localhost:3000/api/blackjack/action \\
+  -H "content-type: application/json" \\
+  -H "authorization: Bearer $TOKEN" \\
+  -d '{"action":"hit"}'
+
+# Leave the table and trigger settlement
+curl -s -X POST http://localhost:3000/api/blackjack/leave \\
+  -H "content-type: application/json" \\
+  -H "authorization: Bearer $TOKEN"
+```
+
 ### Token assets
 
 This repo includes lightweight SVG placeholders (`public/dynowager-300.svg` and `public/dynowager-banner-1280x230.svg`)
