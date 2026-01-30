@@ -395,6 +395,13 @@ function requireLoginWallet(req, walletAddress) {
 }
 
 function parseAmountWei(value) {
+  if (value && typeof value === "object" && value.$type === "BigInt") {
+    value = value.value;
+  }
+  if (typeof value === "bigint") {
+    if (value <= 0n) return { error: "amountWei must be positive" };
+    return { ok: true, amountWei: value };
+  }
   if (typeof value !== "string") return { error: "amountWei required" };
   try {
     const parsed = BigInt(value);
