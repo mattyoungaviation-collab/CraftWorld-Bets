@@ -454,6 +454,48 @@ select {
   font-weight: 700;
 }
 
+.blackjack-layout {
+  display: grid;
+  gap: 16px;
+}
+
+.blackjack-table-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.table-center-panel {
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 16px;
+  border: 1px solid #e2e8f0;
+}
+
+.table-center-title {
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.table-center-body {
+  display: grid;
+  gap: 6px;
+  color: #475569;
+  font-size: 14px;
+}
+
+.blackjack-seats-panel {
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.blackjack-seats-grid {
+  display: grid;
+  gap: 12px;
+}
+
 .dealer-row {
   display: flex;
   gap: 16px;
@@ -484,12 +526,6 @@ select {
   font-weight: 600;
 }
 
-.blackjack-seats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 16px;
-}
-
 .seat-card {
   border: 1px solid #e2e8f0;
   border-radius: 16px;
@@ -498,6 +534,21 @@ select {
   flex-direction: column;
   gap: 12px;
   background: #ffffff;
+  min-height: 260px;
+}
+
+.seat-card-grid {
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.seat-card-grid:hover {
+  border-color: #94a3b8;
+}
+
+.seat-card.selected {
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.2);
 }
 
 .seat-card.active {
@@ -512,13 +563,31 @@ select {
   gap: 12px;
 }
 
+.seat-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.seat-status-pill {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+  color: #334155;
+}
+
 .seat-title {
   font-weight: 700;
 }
 
 .seat-fields {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -534,6 +603,79 @@ select {
   min-width: 160px;
   padding: 10px 12px;
   font-size: 14px;
+}
+
+.blackjack-controls {
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 16px;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.blackjack-controls-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.blackjack-controls-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.control-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.blackjack-actions-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+@media (min-width: 1024px) {
+  .blackjack-layout {
+    grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+  }
+
+  .blackjack-seats-panel {
+    max-height: 680px;
+    overflow-y: auto;
+  }
+
+  .blackjack-seats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .blackjack-controls-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1023px) {
+  .blackjack-seats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .blackjack-controls {
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    box-shadow: 0 -6px 20px rgba(15, 23, 42, 0.08);
+  }
+
+  .seat-fields {
+    grid-template-columns: 1fr;
+  }
 }
 
 .seat-bet-overlay {
