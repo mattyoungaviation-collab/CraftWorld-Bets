@@ -81,6 +81,8 @@ const SERVICE_FEE_BPS = 500;
 const VALIDATION_TTL_MS = 5 * 60 * 1000;
 const validations = new Map();
 const WALLET_BET_LIMIT = 1000;
+const GAME_WALLET_ADDRESS =
+  process.env.GAME_WALLET_ADDRESS || "0x1111111111111111111111111111111111111111";
 
 const MASTERPIECE_QUERY = `
   query Masterpiece($id: ID) {
@@ -271,6 +273,14 @@ function attachBetToWallet(address, betId) {
 
 // ---- API routes FIRST ----
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
+
+app.get("/api/game-wallet", (_req, res) => {
+  res.json({
+    ok: true,
+    address: GAME_WALLET_ADDRESS,
+    note: "TODO: replace with per-user game wallet assignment.",
+  });
+});
 
 app.get("/api/blackjack/state", (_req, res) => {
   res.json({ ok: true, state: blackjackState });

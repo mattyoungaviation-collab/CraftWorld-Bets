@@ -1,6 +1,10 @@
-import EthereumProvider from "@walletconnect/ethereum-provider";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import SiteFooter from "./components/SiteFooter";
+import { useDynwRonPool } from "./lib/useDynwRonPool";
+import { useRoninBalances } from "./lib/useRoninBalances";
+import { DYNW_TOKEN, RONIN_CHAIN, shortAddress } from "./lib/tokens";
+import { useWallet } from "./lib/wallet";
 import "./App.css";
 
 type LeaderRow = {
@@ -120,10 +124,8 @@ type BlackjackState = {
   log: string[];
 };
 
-const COIN_SYMBOL = "$COIN";
-const COIN_CONTRACT = "0x7DC167E270D5EF683CEAF4AFCDF2EFBDD667A9A7";
-const ERC20_BALANCE_OF = "0x70a08231";
-const ERC20_DECIMALS = "0x313ce567";
+const COIN_SYMBOL = DYNW_TOKEN.symbol;
+const COIN_CONTRACT = DYNW_TOKEN.address;
 const ERC20_TRANSFER = "0xa9059cbb";
 const ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const SERVICE_FEE_BPS = 500;
@@ -379,8 +381,8 @@ function isValidAddress(address?: string | null) {
 
 export default function App() {
   const [username, setUsername] = useState(() => localStorage.getItem("cw_bets_user") || "");
-  const [wallet, setWallet] = useState<string | null>(null);
-  const [walletProvider, setWalletProvider] = useState<any>(null);
+  const { wallet, provider: walletProvider, chainId, connectWallet, disconnectWallet, walletConnectEnabled } =
+    useWallet();
   const [mpId, setMpId] = useState<number>(() => {
     const stored = localStorage.getItem("cw_bets_mp_id");
     const parsed = stored ? Number(stored) : NaN;
@@ -400,7 +402,8 @@ export default function App() {
   const [positionsLoading, setPositionsLoading] = useState(false);
   const [futureMode, setFutureMode] = useState(false);
   const [futurePick, setFuturePick] = useState("");
-  const [coinPrice, setCoinPrice] = useState<number | null>(null);
+  const [dynwUsdPrice, setDynwUsdPrice] = useState<number | null>(null);
+  const { priceRonPerDynw: dynwRonPrice, error: dynwRonPriceError } = useDynwRonPool();
   const [blackjackSeats, setBlackjackSeats] = useState<BlackjackSeat[]>(() =>
     Array.from({ length: 5 }, (_, index) => ({
       id: index,
@@ -428,8 +431,9 @@ export default function App() {
   const [blackjackLog, setBlackjackLog] = useState<string[]>([]);
   const [blackjackNow, setBlackjackNow] = useState(() => Date.now());
   const autoStartCooldownRef = useRef<number | null>(null);
-  const [coinDecimals, setCoinDecimals] = useState<number>(18);
-  const [coinBalance, setCoinBalance] = useState<bigint | null>(null);
+  const coinDecimals = DYNW_TOKEN.decimals;
+  const { ronBalance, dynwBalance } = useRoninBalances(wallet, walletProvider);
+  const coinBalance = dynwBalance;
   const [activeTab, setActiveTab] = useState<"betting" | "odds" | "blackjack">("betting");
   const [oddsRows, setOddsRows] = useState<OddsRow[]>([]);
   const [oddsLoading, setOddsLoading] = useState(false);
@@ -451,8 +455,7 @@ export default function App() {
   const escrowAddress = BET_ESCROW_ADDRESS || "";
   const hasEscrowAddress = Boolean(BET_ESCROW_ADDRESS);
   const escrowAddressValid = isValidAddress(escrowAddress);
-  const walletConnectProjectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined;
-  const walletConnectEnabled = Boolean(walletConnectProjectId);
+  const isWrongChain = !!wallet && chainId !== null && chainId !== RONIN_CHAIN.chainId;
 
   useEffect(() => {
     localStorage.setItem("cw_bets_user", username);
@@ -461,12 +464,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("cw_bets_mp_id", String(mpId));
   }, [mpId]);
-
-  useEffect(() => {
-    if (!wallet) {
-      setCoinBalance(null);
-    }
-  }, [wallet]);
 
   useEffect(() => {
     if (!wallet) {
@@ -582,14 +579,14 @@ export default function App() {
     }
   }
 
-  async function loadCoinPrice() {
+  async function loadDynwUsdPrice() {
     try {
       const r = await fetch(
         `https://api.geckoterminal.com/api/v2/simple/networks/ronin/token_price/${COIN_CONTRACT}`
       );
       const j = await r.json();
       const price = Number(j?.data?.attributes?.token_prices?.[COIN_CONTRACT.toLowerCase()]);
-      if (Number.isFinite(price)) setCoinPrice(price);
+      if (Number.isFinite(price)) setDynwUsdPrice(price);
     } catch (e) {
       console.error(e);
     }
@@ -598,8 +595,8 @@ export default function App() {
   useEffect(() => {
     loadCurrentMasterpiece(mpId);
     loadBets(mpId);
-    loadCoinPrice();
-    const interval = setInterval(() => loadCoinPrice(), 60000);
+    loadDynwUsdPrice();
+    const interval = setInterval(() => loadDynwUsdPrice(), 60000);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -615,69 +612,10 @@ export default function App() {
   }, [activeTab, oddsLoading, oddsRows.length]);
 
   useEffect(() => {
-    if (!wallet || !walletProvider) return;
-    const walletAddress = wallet;
-    let isActive = true;
-
-    async function loadCoinMeta() {
-      try {
-        const decimalsHex = await walletProvider.request({
-          method: "eth_call",
-          params: [{ to: COIN_CONTRACT, data: ERC20_DECIMALS }, "latest"],
-        });
-        const parsed = Number.parseInt(decimalsHex, 16);
-        if (Number.isFinite(parsed) && isActive) setCoinDecimals(parsed);
-      } catch (e) {
-        console.error(e);
-      }
+    if (wallet && !username) {
+      setUsername(wallet);
     }
-
-    async function loadCoinBalance() {
-      try {
-        const data = `${ERC20_BALANCE_OF}${padAddress(walletAddress)}`;
-        const balanceHex = await walletProvider.request({
-          method: "eth_call",
-          params: [{ to: COIN_CONTRACT, data }, "latest"],
-        });
-        const value = BigInt(balanceHex);
-        if (isActive) setCoinBalance(value);
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
-    loadCoinMeta();
-    loadCoinBalance();
-    const interval = setInterval(loadCoinBalance, 30000);
-    return () => {
-      isActive = false;
-      clearInterval(interval);
-    };
-  }, [wallet, walletProvider]);
-
-  useEffect(() => {
-    if (!walletProvider) return;
-
-    const handleAccountsChanged = (accounts: string[]) => {
-      const next = accounts?.[0] || null;
-      setWallet(next);
-      if (!next) setCoinBalance(null);
-    };
-
-    const handleDisconnect = () => {
-      setWallet(null);
-      setWalletProvider(null);
-      setCoinBalance(null);
-    };
-
-    walletProvider.on?.("accountsChanged", handleAccountsChanged);
-    walletProvider.on?.("disconnect", handleDisconnect);
-
-    return () => {
-      walletProvider.removeListener?.("accountsChanged", handleAccountsChanged);
-      walletProvider.removeListener?.("disconnect", handleDisconnect);
-    };
-  }, [walletProvider]);
+  }, [wallet, username]);
 
   const top100 = useMemo(() => (mp?.leaderboard || []).slice(0, 100), [mp]);
   const hasLiveBoard = top100.length > 0;
@@ -1104,64 +1042,17 @@ export default function App() {
     }
   }
 
-  async function connectWallet() {
-    setToast("");
-    try {
-      if (!walletConnectProjectId) {
-        setToast("❌ Missing VITE_WALLETCONNECT_PROJECT_ID. Add it to your environment to use WalletConnect.");
-        return;
-      }
-
-      const provider = await EthereumProvider.init({
-        projectId: walletConnectProjectId,
-        chains: [2020],
-        optionalChains: [2020],
-        showQrModal: true,
-        metadata: {
-          name: "CraftWorld Bets",
-          description: "Betting desk for CraftWorld masterpieces.",
-          url: window.location.origin,
-          icons: ["https://walletconnect.com/walletconnect-logo.png"],
-        },
-        rpcMap: {
-          2020: "https://api.roninchain.com/rpc",
-        },
-      });
-
-      await provider.enable();
-      const accounts = provider.accounts;
-      const acct = accounts?.[0];
-      if (acct) {
-        setWalletProvider(provider);
-        setWallet(acct);
-        if (!username) setUsername(acct);
-      }
-    } catch (e: any) {
-      setToast(`❌ ${e?.message || String(e)}`);
-    }
-  }
-
-  async function disconnectWallet() {
-    setToast("");
-    try {
-      if (walletProvider?.disconnect) {
-        await walletProvider.disconnect();
-      }
-    } catch (e: any) {
-      setToast(`❌ ${e?.message || String(e)}`);
-    } finally {
-      setWallet(null);
-      setWalletProvider(null);
-      setCoinBalance(null);
-    }
-  }
-
   async function handleWalletAction() {
-    if (wallet) {
-      await disconnectWallet();
-      return;
+    setToast("");
+    try {
+      if (wallet) {
+        await disconnectWallet();
+      } else {
+        await connectWallet();
+      }
+    } catch (e: any) {
+      setToast(`❌ ${e?.message || String(e)}`);
     }
-    await connectWallet();
   }
 
   async function placeBet(picked: LeaderRow) {
@@ -1568,7 +1459,7 @@ export default function App() {
 
   const feeAmount = useMemo(() => Math.floor((amount * SERVICE_FEE_BPS) / 10000), [amount]);
   const wagerAmount = useMemo(() => Math.max(amount - feeAmount, 0), [amount, feeAmount]);
-  const totalInUsd = useMemo(() => (coinPrice || 0) * amount, [coinPrice, amount]);
+  const totalInUsd = useMemo(() => (dynwUsdPrice || 0) * amount, [dynwUsdPrice, amount]);
   const turnCountdownMs = useMemo(
     () => (blackjackTurnExpiresAt ? blackjackTurnExpiresAt - blackjackNow : null),
     [blackjackTurnExpiresAt, blackjackNow]
@@ -1608,8 +1499,24 @@ export default function App() {
         </div>
         <div className="header-actions">
           <div className="price-pill">
-            <div>{COIN_SYMBOL} live price</div>
-            <strong>{formatUsd(coinPrice)}</strong>
+            <div>{COIN_SYMBOL} price (RON)</div>
+            <strong>
+              {dynwRonPrice !== null
+                ? `${dynwRonPrice.toFixed(6)} RON`
+                : dynwRonPriceError
+                ? "Unavailable"
+                : "Loading..."}
+            </strong>
+          </div>
+          <div className="price-pill">
+            <div>RON balance</div>
+            <strong>
+              {wallet
+                ? ronBalance !== null
+                  ? formatTokenAmount(ronBalance, 18)
+                  : "Loading..."
+                : "Wallet not connected"}
+            </strong>
           </div>
           <div className="price-pill">
             <div>{COIN_SYMBOL} balance</div>
@@ -1620,6 +1527,18 @@ export default function App() {
                   : "Loading..."
                 : "Wallet not connected"}
             </strong>
+          </div>
+          <div className="price-pill">
+            <div>Wallet</div>
+            <strong>{wallet ? shortAddress(wallet) : "Not connected"}</strong>
+          </div>
+          <div className="header-links">
+            <Link className="btn btn-ghost" to="/swap">
+              Swap
+            </Link>
+            <Link className="btn btn-ghost" to="/token">
+              DYNW Token
+            </Link>
           </div>
           <button
             className="btn btn-primary"
@@ -1635,6 +1554,9 @@ export default function App() {
               ? `Disconnect: ${wallet.slice(0, 6)}...${wallet.slice(-4)}`
               : "Connect Wallet"}
           </button>
+          {isWrongChain && (
+            <div className="subtle">Wrong network detected. Switch to Ronin Mainnet (chain {RONIN_CHAIN.chainId}).</div>
+          )}
           {!walletConnectEnabled && (
             <div className="subtle">Set VITE_WALLETCONNECT_PROJECT_ID in your .env to enable wallet connections.</div>
           )}
@@ -1726,7 +1648,7 @@ export default function App() {
             <div className="status-pill">
               <span>Pot ({COIN_SYMBOL})</span>
               <strong>
-                {fmt(potForSelected)} ({formatUsd((coinPrice || 0) * potForSelected)})
+                {fmt(potForSelected)} ({formatUsd((dynwUsdPrice || 0) * potForSelected)})
               </strong>
             </div>
           </div>
@@ -2335,7 +2257,7 @@ export default function App() {
                   <div className="cell-center">#{bet.position}</div>
                   <div className="numeric">
                     {fmt(total)} {COIN_SYMBOL}
-                    <div className="subtle">{formatUsd((coinPrice || 0) * total)}</div>
+                    <div className="subtle">{formatUsd((dynwUsdPrice || 0) * total)}</div>
                   </div>
                   <div className="numeric">
                     {fmt(wager)} {COIN_SYMBOL}
@@ -2346,7 +2268,7 @@ export default function App() {
                   <div className="numeric">
                     {liveValue !== null ? `${fmt(liveValue)} ${COIN_SYMBOL}` : "—"}
                     <div className="subtle">
-                      {liveValue !== null ? formatUsd((coinPrice || 0) * liveValue) : "—"}
+                      {liveValue !== null ? formatUsd((dynwUsdPrice || 0) * liveValue) : "—"}
                     </div>
                     <div className="subtle">Pot cap: {fmt(pot)} {COIN_SYMBOL}</div>
                   </div>
@@ -2390,7 +2312,7 @@ export default function App() {
                   </div>
                   <div className="numeric">
                     {fmt(winner.payout)} {COIN_SYMBOL}
-                    <div className="subtle">{formatUsd((coinPrice || 0) * winner.payout)}</div>
+                    <div className="subtle">{formatUsd((dynwUsdPrice || 0) * winner.payout)}</div>
                   </div>
                 </div>
               ))}

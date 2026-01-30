@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="230" viewBox="0 0 1280 230" role="img" aria-label="DynoWager banner placeholder">
+  <defs>
+    <linearGradient id="bannerGradient" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#2563eb" />
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="230" rx="28" fill="url(#bannerGradient)" />
+  <text x="64" y="110" fill="#f8fafc" font-family="Inter, system-ui, sans-serif" font-size="40" font-weight="700">DynoWager</text>
+  <text x="64" y="148" fill="#e2e8f0" font-family="Inter, system-ui, sans-serif" font-size="18">Ronin Mainnet DYNW Token</text>
+  <circle cx="1140" cy="90" r="48" fill="#f8fafc" opacity="0.12" />
+  <circle cx="1200" cy="160" r="28" fill="#f8fafc" opacity="0.12" />
+</svg>

@@ -4,6 +4,10 @@ export default function SiteFooter() {
   return (
     <footer className="site-footer">
       <div className="site-footer-links">
+        <Link to="/swap">Swap</Link>
+        <span aria-hidden="true">•</span>
+        <Link to="/token">DYNW Token</Link>
+        <span aria-hidden="true">•</span>
         <Link to="/terms">Terms</Link>
         <span aria-hidden="true">•</span>
         <Link to="/privacy">Privacy</Link>
