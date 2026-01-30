@@ -340,6 +340,17 @@ app.post("/api/game-wallet/swap", async (req, res) => {
       return res.status(400).json({ error: "Invalid swap amounts" });
     }
 
+    const [routerCode, wronCode] = await Promise.all([
+      roninProvider.getCode(KATANA_ROUTER_ADDRESS),
+      roninProvider.getCode(WRON_ADDRESS),
+    ]);
+    if (!routerCode || routerCode === "0x") {
+      return res.status(400).json({ error: "KATANA_ROUTER_ADDRESS does not point to a contract" });
+    }
+    if (!wronCode || wronCode === "0x") {
+      return res.status(400).json({ error: "WRON_ADDRESS does not point to a contract" });
+    }
+
     const wallet = new Wallet(GAME_WALLET_PRIVATE_KEY, roninProvider);
     const router = new Contract(KATANA_ROUTER_ADDRESS, ROUTER_ABI, wallet);
     const swapDeadline = Number(deadline) || Math.floor(Date.now() / 1000) + 10 * 60;

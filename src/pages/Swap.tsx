@@ -217,9 +217,21 @@ export default function Swap() {
     }
 
     try {
+      const provider = getRoninProvider();
+      const [routerCode, wronCode] = await Promise.all([
+        provider.getCode(KATANA_ROUTER_ADDRESS),
+        provider.getCode(WRON_TOKEN.address),
+      ]);
+      if (!routerCode || routerCode === "0x") {
+        setSwapError("Katana router address is not a contract. Check VITE_KATANA_ROUTER_ADDRESS.");
+        return;
+      }
+      if (!wronCode || wronCode === "0x") {
+        setSwapError("WRON address is not a contract. Check VITE_WRON_ADDRESS.");
+        return;
+      }
       setSwapStatus("Refreshing pool...");
       await refreshPool();
-      const provider = getRoninProvider();
       const { reserveRon: reserveRonLatest, reserveDynw: reserveDynwLatest } = await getDynwRonReserves(provider);
       const reserveIn = direction === "RON_TO_DYNW" ? reserveRonLatest : reserveDynwLatest;
       const reserveOut = direction === "RON_TO_DYNW" ? reserveDynwLatest : reserveRonLatest;
