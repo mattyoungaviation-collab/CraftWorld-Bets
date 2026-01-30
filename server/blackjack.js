@@ -431,17 +431,6 @@ export function startRound(state) {
   const roundId = state.roundId || 1;
   state.activeRoundId = roundId;
   state.roundId = roundId + 1;
-  const removedSeats = [];
-  state.seats = state.seats.map((seat) => {
-    if (seat.joined && !seat.readyForNextRound) {
-      removedSeats.push(seat.id);
-      return createSeat(seat.id);
-    }
-    return seat;
-  });
-  removedSeats.forEach((seatId) => {
-    appendLog(state, `Seat ${seatId + 1} left after skipping the next-round prompt.`);
-  });
   const activeSeats = state.seats.filter((seat) => seat.joined);
   if (activeSeats.length === 0) {
     appendLog(state, "No players seated. Join a seat to start a round.");
