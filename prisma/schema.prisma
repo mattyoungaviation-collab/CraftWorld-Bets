@@ -14,3 +14,44 @@ model User {
 
   @@map("users")
 }
+
+model BlackjackSession {
+  id           String   @id @default(cuid())
+  walletAddress String
+  seatId       Int
+  status       String
+  buyInWei     BigInt
+  bankrollWei  BigInt
+  committedWei BigInt
+  netPnlWei    BigInt
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  settlements  BlackjackSettlement[]
+
+  @@index([walletAddress])
+  @@map("blackjack_sessions")
+}
+
+model BlackjackSettlement {
+  id            String   @id @default(cuid())
+  sessionId     String
+  betId         String
+  txHash        String
+  netPnlWei     BigInt
+  status        String
+  createdAt     DateTime @default(now())
+
+  session       BlackjackSession @relation(fields: [sessionId], references: [id])
+
+  @@unique([sessionId])
+  @@map("blackjack_settlements")
+}
+
+model BlackjackTableState {
+  id        String   @id
+  state     Json
+  updatedAt DateTime @updatedAt
+
+  @@map("blackjack_table_state")
+}

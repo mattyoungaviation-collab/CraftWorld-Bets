@@ -194,15 +194,18 @@ function resolveDealerAndPayout(state) {
   const dealerTotalsFinal = getHandTotals(nextDealer);
   const dealerHasBlackjack = isBlackjack(nextDealer);
 
+  const roundResults = [];
   state.seats = state.seats.map((seat) => {
     if (!seat.joined || seat.status === "waiting" || seat.status === "empty") {
       return seat.joined ? { ...seat, readyForNextRound: false } : seat;
     }
     let payoutTotal = 0;
     const outcomes = [];
+    let totalBet = 0;
 
     seat.hands.forEach((hand, index) => {
       const bet = seat.bets[index] ?? 0;
+      totalBet += bet;
       const handTotals = getHandTotals(hand);
       let payout = 0;
       let outcome = "lose";
@@ -229,13 +232,12 @@ function resolveDealerAndPayout(state) {
       outcomes.push(outcome);
     });
 
-    if (seat.walletAddress && seat.activeBetId) {
-      state.settlementQueue.push({
-        betId: seat.activeBetId,
-        walletAddress: seat.walletAddress,
-        payoutAmount: payoutTotal,
+    if (seat.walletAddress) {
+      roundResults.push({
         seatId: seat.id,
-        roundId: seat.activeBetRoundId,
+        walletAddress: seat.walletAddress,
+        totalBet,
+        payoutTotal,
       });
     }
 
@@ -252,6 +254,7 @@ function resolveDealerAndPayout(state) {
     };
   });
 
+  state.lastRoundResults = roundResults;
   state.dealer = nextDealer;
   state.seats = state.seats.map((seat) =>
     seat.pendingLeave
@@ -286,9 +289,45 @@ export function createDefaultBlackjackState() {
     turnExpiresAt: null,
     cooldownExpiresAt: null,
     settlementQueue: [],
+    lastRoundResults: [],
+    lastSettledRoundId: null,
     roundId: 1,
     activeRoundId: null,
     updatedAt: new Date().toISOString(),
+  };
+}
+
+export function normalizeBlackjackState(raw) {
+  if (!raw || typeof raw !== "object") return createDefaultBlackjackState();
+  const seats = Array.isArray(raw.seats) && raw.seats.length > 0 ? raw.seats : createSeats();
+  const shoe = Array.isArray(raw.shoe) && raw.shoe.length > 0 ? raw.shoe : buildShoe();
+  const normalizedSeats = seats.map((seat, index) => ({
+    ...createSeat(index),
+    ...seat,
+    readyForNextRound:
+      typeof seat.readyForNextRound === "boolean" ? seat.readyForNextRound : Boolean(seat.joined),
+    hands: Array.isArray(seat.hands) ? seat.hands : [],
+    handStatuses: Array.isArray(seat.handStatuses) ? seat.handStatuses : [],
+    handSplits: Array.isArray(seat.handSplits) ? seat.handSplits : [],
+    bets: Array.isArray(seat.bets) ? seat.bets : [],
+    lastOutcomes: Array.isArray(seat.lastOutcomes) ? seat.lastOutcomes : [],
+  }));
+  return {
+    seats: normalizedSeats,
+    dealer: Array.isArray(raw.dealer) ? raw.dealer : [],
+    shoe,
+    phase: raw.phase || "idle",
+    activeSeat: Number.isInteger(raw.activeSeat) ? raw.activeSeat : null,
+    activeHand: Number.isInteger(raw.activeHand) ? raw.activeHand : null,
+    log: Array.isArray(raw.log) ? raw.log : [],
+    turnExpiresAt: raw.turnExpiresAt ?? null,
+    cooldownExpiresAt: raw.cooldownExpiresAt ?? null,
+    settlementQueue: Array.isArray(raw.settlementQueue) ? raw.settlementQueue : [],
+    lastRoundResults: Array.isArray(raw.lastRoundResults) ? raw.lastRoundResults : [],
+    lastSettledRoundId: Number.isInteger(raw.lastSettledRoundId) ? raw.lastSettledRoundId : null,
+    roundId: Number.isInteger(raw.roundId) && raw.roundId > 0 ? raw.roundId : 1,
+    activeRoundId: Number.isInteger(raw.activeRoundId) ? raw.activeRoundId : null,
+    updatedAt: raw.updatedAt || new Date().toISOString(),
   };
 }
 
@@ -296,35 +335,7 @@ export function loadBlackjackState(filePath) {
   try {
     if (!fs.existsSync(filePath)) return createDefaultBlackjackState();
     const raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-    if (!raw || typeof raw !== "object") return createDefaultBlackjackState();
-    const seats = Array.isArray(raw.seats) && raw.seats.length > 0 ? raw.seats : createSeats();
-    const shoe = Array.isArray(raw.shoe) && raw.shoe.length > 0 ? raw.shoe : buildShoe();
-    const normalizedSeats = seats.map((seat, index) => ({
-      ...createSeat(index),
-      ...seat,
-      readyForNextRound:
-        typeof seat.readyForNextRound === "boolean" ? seat.readyForNextRound : Boolean(seat.joined),
-      hands: Array.isArray(seat.hands) ? seat.hands : [],
-      handStatuses: Array.isArray(seat.handStatuses) ? seat.handStatuses : [],
-      handSplits: Array.isArray(seat.handSplits) ? seat.handSplits : [],
-      bets: Array.isArray(seat.bets) ? seat.bets : [],
-      lastOutcomes: Array.isArray(seat.lastOutcomes) ? seat.lastOutcomes : [],
-    }));
-    return {
-      seats: normalizedSeats,
-      dealer: Array.isArray(raw.dealer) ? raw.dealer : [],
-      shoe,
-      phase: raw.phase || "idle",
-      activeSeat: Number.isInteger(raw.activeSeat) ? raw.activeSeat : null,
-      activeHand: Number.isInteger(raw.activeHand) ? raw.activeHand : null,
-      log: Array.isArray(raw.log) ? raw.log : [],
-      turnExpiresAt: raw.turnExpiresAt ?? null,
-      cooldownExpiresAt: raw.cooldownExpiresAt ?? null,
-      settlementQueue: Array.isArray(raw.settlementQueue) ? raw.settlementQueue : [],
-      roundId: Number.isInteger(raw.roundId) && raw.roundId > 0 ? raw.roundId : 1,
-      activeRoundId: Number.isInteger(raw.activeRoundId) ? raw.activeRoundId : null,
-      updatedAt: raw.updatedAt || new Date().toISOString(),
-    };
+    return normalizeBlackjackState(raw);
   } catch (e) {
     console.error("Failed to load blackjack state:", e);
     return createDefaultBlackjackState();
@@ -420,17 +431,6 @@ export function startRound(state) {
   const roundId = state.roundId || 1;
   state.activeRoundId = roundId;
   state.roundId = roundId + 1;
-  const removedSeats = [];
-  state.seats = state.seats.map((seat) => {
-    if (seat.joined && !seat.readyForNextRound) {
-      removedSeats.push(seat.id);
-      return createSeat(seat.id);
-    }
-    return seat;
-  });
-  removedSeats.forEach((seatId) => {
-    appendLog(state, `Seat ${seatId + 1} left after skipping the next-round prompt.`);
-  });
   const activeSeats = state.seats.filter((seat) => seat.joined);
   if (activeSeats.length === 0) {
     appendLog(state, "No players seated. Join a seat to start a round.");
@@ -446,7 +446,7 @@ export function startRound(state) {
   const nextDealer = [];
   const dealtSeats = state.seats.map((seat) => {
     if (!seat.joined) return seat;
-    const hasPending = seat.pendingBetRoundId === state.activeRoundId && seat.pendingBetId;
+    const hasPending = seat.pendingBetRoundId === state.activeRoundId && seat.pendingBetAmount > 0;
     const bet = Math.max(BLACKJACK_MIN_BET, Math.min(seat.bet, seat.pendingBetAmount || seat.bet));
     if (!hasPending || bet <= 0) {
       return {
@@ -470,9 +470,9 @@ export function startRound(state) {
       pendingBetAmount: 0,
       pendingBetAmountWei: null,
       pendingBetRoundId: null,
-      activeBetId: seat.pendingBetId,
-      activeBetRoundId: seat.pendingBetRoundId,
-      activeBetAmountWei: seat.pendingBetAmountWei,
+      activeBetId: null,
+      activeBetRoundId: null,
+      activeBetAmountWei: null,
       hands: [hand],
       handStatuses: [handStatus],
       handSplits: [false],
