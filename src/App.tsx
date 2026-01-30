@@ -2099,6 +2099,11 @@ export default function App() {
               >
                 Reset Round
               </button>
+              {blackjackSession && (
+                <button className="btn btn-ghost" onClick={() => leaveSeat()} disabled={activeSessionSeat?.status === "playing"}>
+                  Leave & settle
+                </button>
+              )}
             </div>
           </div>
 
