@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import SiteFooter from "../components/SiteFooter";
-import { DYNW_TOKEN, DYNW_VAULT_ADDRESS, shortAddress } from "../lib/tokens";
+import { DYNW_TOKEN, VAULT_LEDGER_ADDRESS, shortAddress } from "../lib/tokens";
 import { useWallet } from "../lib/wallet";
 
 export default function Token() {
@@ -98,7 +98,7 @@ export default function Token() {
             </div>
             <div>
               <div className="label">Vault Address</div>
-              <div className="static-field">{DYNW_VAULT_ADDRESS}</div>
+              <div className="static-field">{VAULT_LEDGER_ADDRESS}</div>
             </div>
           </div>
           <div className="actions">

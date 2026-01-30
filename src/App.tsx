@@ -600,7 +600,7 @@ export default function App() {
       return;
     }
     try {
-      setGameWalletError("");
+      setToast("");
       const nonceRes = await fetch("/api/auth/nonce", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -827,7 +827,7 @@ export default function App() {
       const stake = pickKey ? positionSnapshot.stakeByPick.get(`${posKey}-${pickKey}`) || 0 : 0;
       if (pot <= 0 || stake <= 0) continue;
       const payout = Math.min((wager / stake) * pot, pot);
-      const recipient = bet.walletAddress || bet.user;
+      const recipient = bet.loginAddress || bet.user;
       winners.push({
         id: bet.id,
         position: bet.position,
@@ -1276,7 +1276,7 @@ export default function App() {
       setToast("⏳ Placing bet in the vault...");
       const betId = preview.betId || buildBetId(mpId, selectedPos);
       const placeTx = await vault.contract.placeBet(betId, vaultTokenAddress(), amountRaw);
-      const receipt = await placeTx.wait();
+      await placeTx.wait();
 
       const r = await authFetch("/api/bets", {
         method: "POST",
