@@ -64,9 +64,6 @@ export default function Token() {
             <Link className="btn btn-ghost" to="/">
               Back to Bets
             </Link>
-            <Link className="btn btn-ghost" to="/swap">
-              Swap
-            </Link>
           </div>
           <button
             className="btn btn-primary"

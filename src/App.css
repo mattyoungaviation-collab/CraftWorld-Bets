@@ -199,12 +199,12 @@ select {
   color: #64748b;
 }
 
-.game-wallet-card h2 {
+.vault-card h2 {
   margin: 6px 0 0;
   font-size: 20px;
 }
 
-.game-wallet-header {
+.vault-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -213,22 +213,22 @@ select {
   flex-wrap: wrap;
 }
 
-.game-wallet-grid {
+.vault-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 16px;
   align-items: start;
 }
 
-.game-wallet-actions {
+.vault-actions {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-.game-wallet-withdraw {
+.vault-inputs {
   display: grid;
-  grid-template-columns: 120px 1fr;
+  grid-template-columns: 1fr auto;
   gap: 10px;
 }
 
@@ -259,7 +259,7 @@ select {
 
 .positions-table .table-header,
 .positions-table .table-row {
-  grid-template-columns: 140px 120px 1.4fr 80px 130px 110px 110px 160px;
+  grid-template-columns: 140px 120px 1.4fr 80px 130px 160px;
 }
 
 .winners-table .table-header,
@@ -802,7 +802,7 @@ select {
 
   .positions-table .table-header,
   .positions-table .table-row {
-    grid-template-columns: 120px 100px 1.4fr 70px 110px 90px 90px 130px;
+    grid-template-columns: 120px 100px 1.4fr 70px 110px 130px;
   }
 
   .odds-table .table-header,

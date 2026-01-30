@@ -1,9 +1,12 @@
+import { Contract } from "ethers";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import SiteFooter from "./components/SiteFooter";
 import { useDynwRonPool } from "./lib/useDynwRonPool";
 import { useRoninBalances } from "./lib/useRoninBalances";
-import { DYNW_TOKEN, RONIN_CHAIN, shortAddress } from "./lib/tokens";
+import { DYNW_TOKEN, RONIN_CHAIN, parseUnits, shortAddress } from "./lib/tokens";
+import { useVaultLedgerBalance } from "./lib/useVaultLedgerBalance";
+import { VAULT_LEDGER_ADDRESS, buildBetId, getVaultContract, vaultTokenAddress } from "./lib/vaultLedger";
 import { useWallet } from "./lib/wallet";
 import "./App.css";
 
@@ -36,6 +39,7 @@ type Masterpiece = {
 
 type Bet = {
   id: string;
+  betId?: string | null;
   user: string;
   userId?: string | null;
   loginAddress?: string | null;
@@ -44,13 +48,8 @@ type Bet = {
   pickedUid: string | null;
   pickedName: string | null;
   amount: number;
-  totalAmount?: number;
-  serviceFeeAmount?: number;
   wagerAmount?: number;
-  walletAddress?: string | null;
-  gameWalletAddress?: string | null;
-  escrowTx?: string | null;
-  feeTx?: string | null;
+  txHash?: string | null;
   createdAt: string;
   futureBet?: boolean;
 };
@@ -128,9 +127,6 @@ type BlackjackState = {
 };
 
 const COIN_SYMBOL = DYNW_TOKEN.symbol;
-const SERVICE_FEE_BPS = 500;
-const SERVICE_FEE_ADDRESS = "0xeED0491B506C78EA7fD10988B1E98A3C88e1C630";
-const BET_ESCROW_ADDRESS = (import.meta.env.VITE_BET_ESCROW_ADDRESS as string | undefined) || "";
 const BLACKJACK_DECKS = 6;
 const BLACKJACK_HOUSE_EDGE = 0.6;
 const BLACKJACK_MIN_BET = 25;
@@ -334,28 +330,19 @@ function simulateOdds(
   };
 }
 
-function isValidAddress(address?: string | null) {
-  if (!address) return false;
-  return /^0x[a-fA-F0-9]{40}$/.test(address);
-}
-
 export default function App() {
   const [username, setUsername] = useState(() => localStorage.getItem("cw_bets_user") || "");
   const COIN_CONTRACT = import.meta.env.VITE_COIN_CONTRACT || "";
   const { wallet, provider: walletProvider, chainId, connectWallet, disconnectWallet, walletConnectEnabled } =
     useWallet();
+  const { vaultBalance, vaultLocked, refresh: refreshVaultBalance } = useVaultLedgerBalance(wallet, walletProvider);
   const [authToken, setAuthToken] = useState(() => localStorage.getItem("cw_bets_token") || "");
   const [loginAddress, setLoginAddress] = useState<string | null>(
     () => localStorage.getItem("cw_bets_login") || null
   );
-  const [gameWalletAddress, setGameWalletAddress] = useState<string | null>(null);
-  const [gameWalletRon, setGameWalletRon] = useState<string>("0");
-  const [gameWalletDynw, setGameWalletDynw] = useState<string>("0");
-  const [gameWalletLoading, setGameWalletLoading] = useState(false);
-  const [gameWalletError, setGameWalletError] = useState("");
-  const [withdrawToken, setWithdrawToken] = useState<"RON" | "DYNW">("RON");
-  const [withdrawAmount, setWithdrawAmount] = useState("");
-  const [withdrawStatus, setWithdrawStatus] = useState("");
+  const [vaultDepositAmount, setVaultDepositAmount] = useState("");
+  const [vaultWithdrawAmount, setVaultWithdrawAmount] = useState("");
+  const [vaultStatus, setVaultStatus] = useState("");
   const [mpId, setMpId] = useState<number>(() => {
     const stored = localStorage.getItem("cw_bets_mp_id");
     const parsed = stored ? Number(stored) : NaN;
@@ -404,6 +391,8 @@ export default function App() {
   const [blackjackLog, setBlackjackLog] = useState<string[]>([]);
   const [blackjackNow, setBlackjackNow] = useState(() => Date.now());
   const autoStartCooldownRef = useRef<number | null>(null);
+  const settlementToastRef = useRef<number | null>(null);
+  const settlementPendingRef = useRef<number | null>(null);
   const coinDecimals = DYNW_TOKEN.decimals;
   const { ronBalance, dynwBalance } = useRoninBalances(wallet, walletProvider);
   const coinBalance = dynwBalance;
@@ -425,9 +414,6 @@ export default function App() {
     pickedName: string;
   } | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
-  const escrowAddress = BET_ESCROW_ADDRESS || "";
-  const hasEscrowAddress = Boolean(BET_ESCROW_ADDRESS);
-  const escrowAddressValid = isValidAddress(escrowAddress);
   const isWrongChain = !!wallet && chainId !== null && chainId !== RONIN_CHAIN.chainId;
   const isSignedIn = Boolean(authToken && loginAddress);
 
@@ -471,13 +457,6 @@ export default function App() {
   }, [mpId]);
 
   useEffect(() => {
-    if (authToken) {
-      loadGameWallet();
-      loadGameWalletBalances();
-    }
-  }, [authToken]);
-
-  useEffect(() => {
     if (!wallet || !loginAddress) return;
     if (wallet.toLowerCase() !== loginAddress.toLowerCase()) {
       handleSignOut();
@@ -485,7 +464,7 @@ export default function App() {
   }, [wallet, loginAddress]);
 
   useEffect(() => {
-    const address = gameWalletAddress || wallet;
+    const address = loginAddress || wallet;
     if (!address) {
       setWalletBets([]);
       setAllBets([]);
@@ -494,7 +473,13 @@ export default function App() {
     if (showPositions) {
       refreshWalletPositions(address);
     }
-  }, [wallet, gameWalletAddress, showPositions]);
+  }, [wallet, loginAddress, showPositions]);
+
+  useEffect(() => {
+    if (activeTab !== "betting") return;
+    if (!mp) return;
+    loadSettlementStatus(mpId, mp);
+  }, [activeTab, mp, mpId]);
 
   function isMasterpieceClosed(masterpiece: Masterpiece) {
     const dynamite = masterpiece.resources?.find((resource) => resource.symbol === "DYNAMITE");
@@ -557,6 +542,29 @@ export default function App() {
     }
   }
 
+  async function loadSettlementStatus(id: number, masterpiece: Masterpiece | null) {
+    try {
+      const r = await fetch(`/api/results/${id}`);
+      const j = await r.json();
+      if (!r.ok || j?.ok !== true) return;
+      if (j?.result?.settledAt && settlementToastRef.current !== id) {
+        setToast(`✅ Settlement finalized for masterpiece #${id}.`);
+        settlementToastRef.current = id;
+        settlementPendingRef.current = null;
+      } else if (
+        masterpiece &&
+        isMasterpieceClosed(masterpiece) &&
+        !j?.result &&
+        settlementPendingRef.current !== id
+      ) {
+        setToast(`⏳ Settlement pending for masterpiece #${id}.`);
+        settlementPendingRef.current = id;
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
   async function loadAllBets() {
     try {
       const r = await fetch("/api/bets");
@@ -569,7 +577,7 @@ export default function App() {
 
   async function loadWalletBets(address: string) {
     try {
-      const r = await fetch(`/api/wallets/${encodeURIComponent(address)}/bets`);
+      const r = await fetch(`/api/bets?walletAddress=${encodeURIComponent(address)}`);
       const j = await r.json();
       setWalletBets(j?.bets || []);
     } catch (e) {
@@ -583,40 +591,6 @@ export default function App() {
       await Promise.all([loadWalletBets(address), loadAllBets()]);
     } finally {
       setPositionsLoading(false);
-    }
-  }
-
-  async function loadGameWallet() {
-    if (!authToken) return;
-    setGameWalletLoading(true);
-    setGameWalletError("");
-    try {
-      const r = await authFetch("/api/game-wallet");
-      const j = await r.json();
-      if (!r.ok || j?.ok !== true) {
-        throw new Error(j?.error || "Unable to load game wallet");
-      }
-      setLoginAddress(j.loginAddress);
-      setGameWalletAddress(j.gameWalletAddress);
-    } catch (e: any) {
-      setGameWalletError(e?.message || String(e));
-    } finally {
-      setGameWalletLoading(false);
-    }
-  }
-
-  async function loadGameWalletBalances() {
-    if (!authToken) return;
-    try {
-      const r = await authFetch("/api/game-wallet/balances");
-      const j = await r.json();
-      if (!r.ok || j?.ok !== true) {
-        throw new Error(j?.error || "Unable to load game wallet balances");
-      }
-      setGameWalletRon(j.ron);
-      setGameWalletDynw(j.dynw);
-    } catch (e: any) {
-      setGameWalletError(e?.message || String(e));
     }
   }
 
@@ -661,37 +635,78 @@ export default function App() {
   function handleSignOut() {
     setAuthToken("");
     setLoginAddress(null);
-    setGameWalletAddress(null);
-    setGameWalletRon("0");
-    setGameWalletDynw("0");
-    setWithdrawStatus("");
+    setVaultStatus("");
     setToast("Signed out.");
   }
 
-  async function handleWithdraw() {
-    if (!withdrawAmount || Number(withdrawAmount) <= 0) {
-      setWithdrawStatus("Enter a valid withdrawal amount.");
+  async function handleVaultDeposit() {
+    if (!vaultDepositAmount || Number(vaultDepositAmount) <= 0) {
+      setVaultStatus("Enter a valid deposit amount.");
       return;
     }
-    if (!authToken) {
-      setWithdrawStatus("Sign in before withdrawing.");
+    if (!wallet || !walletProvider) {
+      setVaultStatus("Connect your wallet before depositing.");
       return;
     }
-    setWithdrawStatus("Submitting withdrawal...");
+    if (!VAULT_LEDGER_ADDRESS) {
+      setVaultStatus("Vault address is not configured.");
+      return;
+    }
+    setVaultStatus("Requesting approval...");
+    setToast("");
     try {
-      const r = await authFetch("/api/game-wallet/withdraw", {
-        method: "POST",
-        body: JSON.stringify({ token: withdrawToken, amount: withdrawAmount }),
-      });
-      const j = await r.json();
-      if (!r.ok || j?.ok !== true) {
-        throw new Error(j?.error || "Withdraw failed");
+      const vault = await getVaultContract(walletProvider);
+      if (!vault) throw new Error("Vault contract unavailable");
+      const { contract, signer } = vault;
+      const amount = parseUnits(vaultDepositAmount, DYNW_TOKEN.decimals);
+      const erc20 = new Contract(
+        DYNW_TOKEN.address,
+        ["function allowance(address owner, address spender) view returns (uint256)", "function approve(address spender, uint256 amount) returns (bool)"],
+        signer,
+      );
+      const allowance = await erc20.allowance(wallet, VAULT_LEDGER_ADDRESS);
+      if (allowance < amount) {
+        await (await erc20.approve(VAULT_LEDGER_ADDRESS, amount)).wait();
+        setToast("✅ Approval confirmed.");
       }
-      setWithdrawStatus(`✅ Withdrawal sent (${j.txHash}).`);
-      setWithdrawAmount("");
-      loadGameWalletBalances();
+      setVaultStatus("Depositing into vault...");
+      await (await contract.depositDYNW(amount)).wait();
+      setVaultStatus("✅ Deposit complete.");
+      setToast("✅ Deposit complete.");
+      setVaultDepositAmount("");
+      refreshVaultBalance();
     } catch (e: any) {
-      setWithdrawStatus(`❌ ${e?.message || String(e)}`);
+      setVaultStatus(`❌ ${e?.message || String(e)}`);
+    }
+  }
+
+  async function handleVaultWithdraw() {
+    if (!vaultWithdrawAmount || Number(vaultWithdrawAmount) <= 0) {
+      setVaultStatus("Enter a valid withdrawal amount.");
+      return;
+    }
+    if (!wallet || !walletProvider) {
+      setVaultStatus("Connect your wallet before withdrawing.");
+      return;
+    }
+    if (!VAULT_LEDGER_ADDRESS) {
+      setVaultStatus("Vault address is not configured.");
+      return;
+    }
+    setVaultStatus("Submitting withdrawal...");
+    setToast("");
+    try {
+      const vault = await getVaultContract(walletProvider);
+      if (!vault) throw new Error("Vault contract unavailable");
+      const { contract } = vault;
+      const amount = parseUnits(vaultWithdrawAmount, DYNW_TOKEN.decimals);
+      await (await contract.withdrawDYNW(amount)).wait();
+      setVaultStatus("✅ Withdrawal complete.");
+      setToast("✅ Withdrawal complete.");
+      setVaultWithdrawAmount("");
+      refreshVaultBalance();
+    } catch (e: any) {
+      setVaultStatus(`❌ ${e?.message || String(e)}`);
     }
   }
 
@@ -1201,8 +1216,6 @@ export default function App() {
     position: number;
     pickedUid: string;
     amount: number;
-    totalAmount: number;
-    serviceFeeAmount: number;
     wagerAmount: number;
     futureBet: boolean;
   }) {
@@ -1214,7 +1227,7 @@ export default function App() {
     if (!r.ok || j?.ok !== true) {
       throw new Error(j?.error || "Unable to validate bet");
     }
-    return j as { ok: true; pickedName: string; validationId: string };
+    return j as { ok: true; pickedName: string; validationId: string; betId: string };
   }
 
   async function finalizeBet() {
@@ -1237,13 +1250,10 @@ export default function App() {
     setPlacing(true);
     setToast("");
     try {
-      let pendingId: string | null = null;
-      const totalAmount = Math.floor(Number(amount));
-      if (totalAmount <= 0) {
+      const wagerAmount = Math.floor(Number(amount));
+      if (wagerAmount <= 0) {
         throw new Error("Bet amount must be greater than zero.");
       }
-      const feeAmount = Math.floor((totalAmount * SERVICE_FEE_BPS) / 10000);
-      const wagerAmount = totalAmount - feeAmount;
 
       const preview = await previewBet({
         user: loginAddress,
@@ -1251,13 +1261,24 @@ export default function App() {
         position: selectedPos,
         pickedUid: pendingBet.pickedUid,
         amount: wagerAmount,
-        totalAmount,
-        serviceFeeAmount: feeAmount,
         wagerAmount,
         futureBet: pendingBet.type === "future",
       });
 
-      const pendingRes = await authFetch("/api/bets/pending", {
+      if (!walletProvider || !wallet) {
+        throw new Error("Connect your wallet to place the bet.");
+      }
+      const vault = await getVaultContract(walletProvider);
+      if (!vault) {
+        throw new Error("Vault contract not available.");
+      }
+      const amountRaw = parseUnits(String(wagerAmount), DYNW_TOKEN.decimals);
+      setToast("⏳ Placing bet in the vault...");
+      const betId = preview.betId || buildBetId(mpId, selectedPos);
+      const placeTx = await vault.contract.placeBet(betId, vaultTokenAddress(), amountRaw);
+      const receipt = await placeTx.wait();
+
+      const r = await authFetch("/api/bets", {
         method: "POST",
         body: JSON.stringify({
           user: loginAddress,
@@ -1265,40 +1286,21 @@ export default function App() {
           position: selectedPos,
           pickedUid: pendingBet.pickedUid,
           amount: wagerAmount,
-          totalAmount,
-          serviceFeeAmount: feeAmount,
           wagerAmount,
-          futureBet: pendingBet.type === "future",
+          betId,
           validationId: preview.validationId,
-        }),
-      });
-      const pendingJson = await pendingRes.json();
-      if (!pendingRes.ok || pendingJson?.ok !== true) {
-        throw new Error(pendingJson?.error || "Unable to reserve bet before transfer.");
-      }
-      pendingId = pendingJson?.pendingId;
-
-      setToast("⏳ Sending wager from your game wallet...");
-      if (!pendingId) {
-        throw new Error("Pending bet was not created. No funds were moved.");
-      }
-      const r = await authFetch("/api/bets/confirm", {
-        method: "POST",
-        body: JSON.stringify({
-          pendingId,
+          txHash: placeTx.hash,
         }),
       });
 
       const j = await r.json();
       if (!r.ok || j?.ok !== true) {
-        throw new Error(j?.error || "Failed to place bet");
+        throw new Error(j?.error || "Failed to record bet");
       }
 
       setToast(
-        `✅ Bet confirmed from game wallet for ${shortAddress(loginAddress)} → #${selectedPos} = ${
-          preview.pickedName
-        } (${fmt(
-          totalAmount
+        `✅ Bet placed for ${shortAddress(loginAddress)} → #${selectedPos} = ${preview.pickedName} (${fmt(
+          wagerAmount
         )} ${COIN_SYMBOL})`
       );
       setPendingBet(null);
@@ -1308,7 +1310,7 @@ export default function App() {
         setFutureMode(false);
       }
       loadBets(mpId);
-      loadGameWalletBalances();
+      refreshVaultBalance();
     } catch (e: any) {
       const message = e?.message || String(e);
       setToast(`❌ Bet failed. Please try again. ${message}`);
@@ -1474,9 +1476,8 @@ export default function App() {
     sendBlackjackAction("/api/blackjack/reset");
   }
 
-  const feeAmount = useMemo(() => Math.floor((amount * SERVICE_FEE_BPS) / 10000), [amount]);
-  const wagerAmount = useMemo(() => Math.max(amount - feeAmount, 0), [amount, feeAmount]);
-  const totalInUsd = useMemo(() => (dynwUsdPrice || 0) * amount, [dynwUsdPrice, amount]);
+  const wagerAmount = useMemo(() => Math.max(amount, 0), [amount]);
+  const totalInUsd = useMemo(() => (dynwUsdPrice || 0) * wagerAmount, [dynwUsdPrice, wagerAmount]);
   const turnCountdownMs = useMemo(
     () => (blackjackTurnExpiresAt ? blackjackTurnExpiresAt - blackjackNow : null),
     [blackjackTurnExpiresAt, blackjackNow]
@@ -1550,9 +1551,6 @@ export default function App() {
             <strong>{wallet ? shortAddress(wallet) : "Not connected"}</strong>
           </div>
           <div className="header-links">
-            <Link className="btn btn-ghost" to="/swap">
-              Swap
-            </Link>
             <Link className="btn btn-ghost" to="/token">
               DYNW Token
             </Link>
@@ -1590,85 +1588,82 @@ export default function App() {
         </div>
       </header>
 
-      <section className="card game-wallet-card">
-        <div className="game-wallet-header">
+      <section className="card vault-card">
+        <div className="vault-header">
           <div>
-            <div className="eyebrow">Game Wallet</div>
-            <h2>In-app wallet for bets & swaps</h2>
+            <div className="eyebrow">Vault Ledger</div>
+            <h2>Non-custodial balance for bets</h2>
           </div>
-          <div className="status-pill">
-            {isSignedIn ? "Signed in" : "Not signed in"}
+          <div className="status-pill">{isSignedIn ? "Signed in" : "Not signed in"}</div>
+        </div>
+        {!VAULT_LEDGER_ADDRESS && (
+          <div className="toast toast-error">Vault ledger address is not configured.</div>
+        )}
+        <div className="vault-grid">
+          <div>
+            <label>Login wallet</label>
+            <div className="static-field">{loginAddress ? shortAddress(loginAddress) : "—"}</div>
+          </div>
+          <div>
+            <label>Vault contract</label>
+            <div className="static-field">{VAULT_LEDGER_ADDRESS ? shortAddress(VAULT_LEDGER_ADDRESS) : "—"}</div>
+          </div>
+          <div>
+            <label>Vault balance ({COIN_SYMBOL})</label>
+            <div className="static-field">
+              {VAULT_LEDGER_ADDRESS
+                ? vaultBalance !== null
+                  ? formatTokenAmount(vaultBalance, DYNW_TOKEN.decimals)
+                  : "Loading..."
+                : "—"}
+            </div>
+          </div>
+          <div>
+            <label>Locked in bets ({COIN_SYMBOL})</label>
+            <div className="static-field">
+              {VAULT_LEDGER_ADDRESS
+                ? vaultLocked !== null
+                  ? formatTokenAmount(vaultLocked, DYNW_TOKEN.decimals)
+                  : "Loading..."
+                : "—"}
+            </div>
+          </div>
+          <div className="vault-actions">
+            <label>Deposit to vault</label>
+            <div className="vault-inputs">
+              <input
+                value={vaultDepositAmount}
+                onChange={(e) => setVaultDepositAmount(e.target.value)}
+                placeholder={`Amount in ${COIN_SYMBOL}`}
+              />
+              <button
+                className="btn btn-primary"
+                onClick={handleVaultDeposit}
+                disabled={!wallet || !VAULT_LEDGER_ADDRESS}
+              >
+                Approve & Deposit
+              </button>
+            </div>
+          </div>
+          <div className="vault-actions">
+            <label>Withdraw from vault</label>
+            <div className="vault-inputs">
+              <input
+                value={vaultWithdrawAmount}
+                onChange={(e) => setVaultWithdrawAmount(e.target.value)}
+                placeholder={`Amount in ${COIN_SYMBOL}`}
+              />
+              <button
+                className="btn btn-primary"
+                onClick={handleVaultWithdraw}
+                disabled={!wallet || !VAULT_LEDGER_ADDRESS}
+              >
+                Withdraw
+              </button>
+            </div>
           </div>
         </div>
-        {!wallet && <p className="subtle">Connect your wallet and sign in to activate your game wallet.</p>}
-        {wallet && !isSignedIn && (
-          <p className="subtle">Sign in with your wallet to generate a game wallet address.</p>
-        )}
-        {gameWalletError && <div className="toast toast-error">{gameWalletError}</div>}
-        {isSignedIn && (
-          <div className="game-wallet-grid">
-            <div>
-              <label>Login wallet</label>
-              <div className="static-field">{loginAddress ? shortAddress(loginAddress) : "—"}</div>
-            </div>
-            <div>
-              <label>Game wallet address</label>
-              <div className="static-field">{gameWalletAddress || "Loading..."}</div>
-            </div>
-            <div>
-              <label>RON balance</label>
-              <div className="static-field">{gameWalletLoading ? "Loading..." : gameWalletRon}</div>
-            </div>
-            <div>
-              <label>DYNW balance</label>
-              <div className="static-field">{gameWalletLoading ? "Loading..." : gameWalletDynw}</div>
-            </div>
-            <div className="game-wallet-actions">
-              <label>Deposit instructions</label>
-              <div className="static-field">
-                Send RON or DYNW to the game wallet address.
-                <div className="subtle">Use the copy button to share the address.</div>
-              </div>
-              <div className="actions">
-                <button
-                  className="btn"
-                  onClick={() => {
-                    if (gameWalletAddress) {
-                      navigator.clipboard?.writeText(gameWalletAddress);
-                      setToast("Game wallet address copied.");
-                    }
-                  }}
-                  disabled={!gameWalletAddress}
-                >
-                  Copy address
-                </button>
-                <button className="btn btn-ghost" onClick={loadGameWalletBalances}>
-                  Refresh balances
-                </button>
-              </div>
-            </div>
-            <div className="game-wallet-actions">
-              <label>Withdraw</label>
-              <div className="game-wallet-withdraw">
-                <select value={withdrawToken} onChange={(e) => setWithdrawToken(e.target.value as "RON" | "DYNW")}>
-                  <option value="RON">RON</option>
-                  <option value="DYNW">DYNW</option>
-                </select>
-                <input
-                  value={withdrawAmount}
-                  onChange={(e) => setWithdrawAmount(e.target.value)}
-                  placeholder="Amount"
-                />
-              </div>
-              <div className="actions">
-                <button className="btn btn-primary" onClick={handleWithdraw}>
-                  Withdraw
-                </button>
-              </div>
-              {withdrawStatus && <div className="subtle">{withdrawStatus}</div>}
-            </div>
-          </div>
-        )}
+        {vaultStatus && <div className="subtle">{vaultStatus}</div>}
       </section>
 
       <div className="tabs">
@@ -1723,13 +1718,8 @@ export default function App() {
               <label>Amount ({COIN_SYMBOL})</label>
               <input type="number" value={amount} onChange={(e) => setAmount(Number(e.target.value))} />
               <div className="subtle" style={{ marginTop: 6 }}>
-                {fmt(wagerAmount)} {COIN_SYMBOL} wager + {fmt(feeAmount)} {COIN_SYMBOL} fee (5%)
+                {fmt(wagerAmount)} {COIN_SYMBOL} wager from your vault balance.
               </div>
-              {hasEscrowAddress && !escrowAddressValid && (
-                <div className="subtle" style={{ marginTop: 6 }}>
-                  Escrow address must be a valid 0x contract address.
-                </div>
-              )}
             </div>
           </div>
 
@@ -2185,20 +2175,19 @@ export default function App() {
           <div className="section-title">Betting Terms</div>
           <ul className="terms-list">
             <li>
-              All bets are final once confirmed on-chain. Bets are funded from your game wallet after you confirm the
-              wager.
+              All bets are final once confirmed on-chain. Bets are funded from your Vault Ledger balance after you sign
+              the transaction.
             </li>
             <li>
-              A 5% service fee is deducted from each bet for server support and operations. The fee is sent to{" "}
-              <strong>{SERVICE_FEE_ADDRESS}</strong> on Ronin.
+              The settlement operator can only move balances between player ledgers and the on-chain treasury. It
+              cannot withdraw your funds to arbitrary addresses.
             </li>
             <li>
-              The escrow smart contract resolves winners and automatically pays out {COIN_SYMBOL} to the wallet that
-              placed the winning bet once results are verified.
+              Winnings are credited back to your Vault Ledger balance. You can withdraw any available balance at any
+              time.
             </li>
             <li>
-              Losing wagers are retained by the escrow contract, while winners are paid directly from{" "}
-              <strong>{escrowAddress || "the escrow contract"}</strong> on Ronin.
+              All outcomes are recorded on-chain and can be indexed via emitted events for later verification.
             </li>
             <li>
               Betting is for entertainment only and does not constitute investment advice. CraftWorld Bets is not
@@ -2323,16 +2312,12 @@ export default function App() {
               <div className="cell-center">Masterpiece</div>
               <div>Pick</div>
               <div>Pos</div>
-              <div className="numeric">Bet Cost</div>
-              <div className="numeric">Size</div>
-              <div className="numeric">Fees</div>
+              <div className="numeric">Wager</div>
               <div className="numeric">Live Value</div>
             </div>
             {walletBets.length === 0 && <div className="empty">No bets found for this wallet.</div>}
             {walletBets.map((bet) => {
               const wager = bet.wagerAmount ?? bet.amount;
-              const total = bet.totalAmount ?? bet.amount;
-              const fee = bet.serviceFeeAmount ?? Math.max(total - wager, 0);
               const posKey = `${bet.masterpieceId}-${bet.position}`;
               const pickKey = bet.pickedUid || bet.pickedName;
               const pot = positionSnapshot.potByPosition.get(posKey) || 0;
@@ -2363,14 +2348,8 @@ export default function App() {
                   <div>{bet.pickedName || bet.pickedUid || "—"}</div>
                   <div className="cell-center">#{bet.position}</div>
                   <div className="numeric">
-                    {fmt(total)} {COIN_SYMBOL}
-                    <div className="subtle">{formatUsd((dynwUsdPrice || 0) * total)}</div>
-                  </div>
-                  <div className="numeric">
                     {fmt(wager)} {COIN_SYMBOL}
-                  </div>
-                  <div className="numeric">
-                    {fmt(fee)} {COIN_SYMBOL}
+                    <div className="subtle">{formatUsd((dynwUsdPrice || 0) * wager)}</div>
                   </div>
                   <div className="numeric">
                     {liveValue !== null ? `${fmt(liveValue)} ${COIN_SYMBOL}` : "—"}
@@ -2512,36 +2491,27 @@ export default function App() {
                   <div className="subtle">Position #{selectedPos}</div>
                 </div>
                 <div>
-                  <div className="label">Total Amount</div>
-                  <div className="title">
-                    {fmt(amount)} {COIN_SYMBOL}
-                  </div>
-                  <div className="subtle">{formatUsd(totalInUsd)}</div>
-                </div>
-                <div>
                   <div className="label">Wager Amount</div>
                   <div className="title">
                     {fmt(wagerAmount)} {COIN_SYMBOL}
                   </div>
-                  <div className="subtle">Escrowed for payouts to {escrowAddress || "an escrow contract"}</div>
+                  <div className="subtle">{formatUsd(totalInUsd)}</div>
                 </div>
                 <div>
-                  <div className="label">Service Fee (5%)</div>
-                  <div className="title">
-                    {fmt(feeAmount)} {COIN_SYMBOL}
-                  </div>
-                  <div className="subtle">Sent to {SERVICE_FEE_ADDRESS}</div>
+                  <div className="label">Settlement</div>
+                  <div className="title">On-chain Vault Ledger</div>
+                  <div className="subtle">Wagers lock in your vault balance until settlement.</div>
                 </div>
               </div>
 
               <div className="terms-box">
                 <p>
-                  By confirming, you authorize a token transfer from your game wallet for the wager and service fee.
-                  Bets are final, non-refundable, and may not be canceled once confirmed.
+                  By confirming, you authorize the Vault Ledger to lock your wagered amount. Bets are final and cannot
+                  be canceled once confirmed.
                 </p>
                 <p>
-                  The escrow contract resolves the outcome and automatically pays winners after the masterpiece closes
-                  and results are verified. Losing wagers remain in the contract.
+                  Settlement is executed by the operator on-chain, crediting winners back to their vault balances and
+                  accruing losses to the treasury. You can withdraw available balances at any time.
                 </p>
                 <p>
                   CraftWorld Bets is not responsible for wallet errors, network congestion, failed transactions, or
@@ -2555,9 +2525,9 @@ export default function App() {
                   checked={acknowledged}
                   onChange={(e) => setAcknowledged(e.target.checked)}
                 />
-                I acknowledge that all bets are final and I authorize the wager + 5% service fee.
+                I acknowledge that all bets are final and I authorize the wager from my vault balance.
               </label>
-              {!isSignedIn && <div className="toast">Sign in to place the bet from your game wallet.</div>}
+              {!isSignedIn && <div className="toast">Sign in to place the bet from your vault balance.</div>}
             </div>
             <div className="modal-actions">
               <button

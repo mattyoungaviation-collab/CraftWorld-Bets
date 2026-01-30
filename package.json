@@ -14,13 +14,15 @@
     "start": "node server/index.js",
     "migrate:deploy": "prisma migrate deploy",
     "prisma:generate": "prisma generate",
-    "deploy:router": "node scripts/deploy-router.mjs"
+    "deploy:vault-ledger": "node scripts/deploy-vault-ledger.mjs",
+    "test:contracts": "hardhat test"
   },
   "dependencies": {
     "@walletconnect/ethereum-provider": "^2.11.2",
     "@walletconnect/modal": "^2.7.0",
     "@reown/appkit": "^1.0.0",
     "@prisma/client": "6.15.0",
+    "@openzeppelin/contracts": "^5.0.2",
     "express": "^4.19.2",
     "ethers": "^6.15.0",
     "jsonwebtoken": "^9.0.2",
@@ -31,9 +33,11 @@
     "solc": "^0.8.30"
   },
   "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
+    "hardhat": "^2.22.15",
     "prisma": "6.15.0",
     "typescript": "^5.6.3",
     "vite": "^7.3.1"

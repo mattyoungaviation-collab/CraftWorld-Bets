@@ -76,8 +76,7 @@ export default defineConfig([
 
 The API stores bets on disk. Set `BETS_DATA_DIR` to a persistent volume path (for example, `/var/data` on Render) so redeploys keep existing bets. If unset, the server falls back to `server/data`.
 
-The game wallet system uses Postgres via Prisma for user and wallet mappings. Configure `DATABASE_URL` and run migrations
-before starting the server.
+User sign-in metadata is stored in Postgres via Prisma. Configure `DATABASE_URL` and run migrations before starting the server.
 
 ## Running locally
 
@@ -88,7 +87,7 @@ npm install
 npm run dev
 ```
 
-Make sure you have a `.env` file (or environment variables) configured with the values below so the swap UI and game-wallet flows can function.
+Make sure you have a `.env` file (or environment variables) configured with the values below so the vault ledger flows can function.
 
 ### Database setup
 
@@ -99,91 +98,98 @@ Make sure you have a `.env` file (or environment variables) configured with the 
 npx prisma migrate deploy
 ```
 
-### Game wallet smoke test
+### Vault ledger smoke test
 
-With the server running, you can test auth + wallet creation:
+With the contracts deployed and the server running, you can exercise a full deposit → bet → settle → withdraw flow:
 
 ```bash
-TEST_LOGIN_PRIVATE_KEY=0x... \
-BASE_URL=http://localhost:3000 \
-node scripts/game-wallet-smoke.mjs
+RONIN_RPC=... \
+VAULT_LEDGER_ADDRESS=0x... \
+DYNW_TOKEN_ADDRESS=0x... \
+OPERATOR_PRIVATE_KEY=0x... \
+TEST_USER_PRIVATE_KEY=0x... \
+DYNW_MINTABLE=true \
+node scripts/vault-ledger-smoke.mjs
 ```
 
-## Smart contract payment routing
+## Vault Ledger smart contract
 
-The `contracts/BetPaymentRouter.sol` contract routes wager payments by splitting a total amount into a service fee and an escrow transfer. Configure the fee recipient, escrow recipient, and fee bps at deployment time, then call `routeTokenPayment` with the ERC-20 token address, total amount, and a bet id to emit an on-chain receipt.
+The `contracts/VaultLedger.sol` contract escrows DYNW (and optional WRON) on-chain and maintains an internal ledger for
+each wallet. Users deposit and withdraw directly. Bets lock internal balances, and the operator can only settle by
+moving value between ledgers and the treasury/fee accounts.
 
-### Deploying the router to Ronin
+**Authorization model:** Option A (operator-settlement). Users call `placeBet` directly from their wallet. The
+`OPERATOR_ROLE` can call `settleBet`, but it can only move balances between internal ledgers and the treasury/fee
+accounts—never withdraw user balances to arbitrary addresses.
+
+**Bet IDs:** The frontend and backend derive bet IDs as `keccak256("cw-bet:<masterpieceId>:<position>")` so all wagers
+for a single market share the same on-chain `betId`.
+
+### Deploying the Vault Ledger to Ronin
 
 Provide the deployment secrets via your deployment system (do not commit them), then run:
 
 ```bash
 RONIN_RPC=... \
-DEPLOYER_PRIVATE_KEY=... \
+DEPLOYER_PRIVATE_KEY=0x... \
+DYNW_TOKEN_ADDRESS=0x... \
+WRON_ADDRESS=0x... \
+TREASURY_ADDRESS=0x... \
 FEE_RECIPIENT=0x... \
-ESCROW_RECIPIENT=0x... \
 FEE_BPS=500 \
-npm run deploy:router
+OPERATOR_ADDRESS=0x... \
+npm run deploy:vault-ledger
 ```
 
-The deployment script compiles `contracts/BetPaymentRouter.sol`, deploys it to Ronin, and writes a `router-deployment.json`
-file containing the deployed address and configuration.
+The deployment script compiles `contracts/VaultLedger.sol`, deploys it to Ronin, and writes a
+`vault-ledger-deployment.json` file containing the deployed address and configuration. It also writes
+`VaultLedger.metadata.json`, which contains the Solidity compiler metadata required by some verification flows.
 
-It also writes `BetPaymentRouter.metadata.json`, which contains the Solidity compiler metadata required by some
-verification flows.
-
-### Verifying the router on Ronin
+### Verifying the Vault Ledger on Ronin
 
 To make the contract readable on the Ronin explorer, verify it after deployment:
 
-1. Open `router-deployment.json` and copy the deployed `address`.
+1. Open `vault-ledger-deployment.json` and copy the deployed `address`.
 2. Use the Ronin explorer's **Verify & Publish** flow with:
-   - **Compiler version:** from `router-deployment.json` (`compilerVersion`).
+   - **Compiler version:** from `vault-ledger-deployment.json` (`compilerVersion`).
    - **Optimizer:** enabled, runs `200`.
-   - **Constructor args:** `feeRecipient`, `escrowRecipient`, `feeBps` (in that order).
-3. Upload the Solidity source from `contracts/BetPaymentRouter.sol`.
-4. If the explorer asks for metadata, upload `BetPaymentRouter.metadata.json`.
+   - **Constructor args:** `dynwToken`, `wronToken`, `treasury`, `feeRecipient`, `feeBps`, `operator` (in that order).
+3. Upload the Solidity source from `contracts/VaultLedger.sol`.
+4. If the explorer asks for metadata, upload `VaultLedger.metadata.json`.
 
 Once verified, the explorer will show the full source and ABI for anyone to read.
 
 ## DYNW Integration
 
-The DynoWager (DYNW) integration pulls balances, prices, swaps, and game-wallet transfers from Ronin Mainnet.
+The DynoWager (DYNW) integration pulls balances, prices, and vault ledger state from Ronin Mainnet.
 
 ### Frontend configuration (Vite)
 
 Set the following environment variables in your frontend `.env` file:
 
 - `VITE_WALLETCONNECT_PROJECT_ID` – WalletConnect project ID (required for wallet connection).
-- `VITE_KATANA_ROUTER_ADDRESS` – Katana router contract address.
-- `VITE_WRON_ADDRESS` – Wrapped RON (WRON) token address.
+- `VITE_VAULT_LEDGER_ADDRESS` – Deployed VaultLedger contract address.
+- `VITE_WRON_ADDRESS` – Wrapped RON (WRON) token address (optional, only used for price discovery).
 - `VITE_KATANA_FACTORY_ADDRESS` – Katana factory address (optional if you set the pair address).
 - `VITE_KATANA_PAIR_ADDRESS` – Known DYNW/WRON pair address (optional if factory is set).
-- `VITE_MAX_SWAP_RON` – Max swap size in RON (defaults to `1`).
 
 If the factory address is unavailable, set `VITE_KATANA_PAIR_ADDRESS` directly so the app can load pool reserves and price.
 
 ### Server configuration
 
-Set the server environment variables for game wallet, swaps, and betting:
+Set the server environment variables for settlement and betting:
 
-- `MASTER_KEY` – 32-byte hex/base64 key used to encrypt game wallet private keys (required).
 - `JWT_SECRET` – JWT signing secret for auth tokens (required).
 - `DATABASE_URL` – Postgres connection string (required).
-- `BET_ESCROW_ADDRESS` – Escrow contract address for wager transfers (required).
-- `SERVICE_FEE_ADDRESS` – Service fee recipient address (required).
 - `BET_MAX_AMOUNT` – Optional max bet size (token units).
-- `RONIN_RPC` – Ronin RPC URL for server-side swap execution (defaults to `https://api.roninchain.com/rpc`).
-- `KYBER_BASE_URL` – Kyber aggregator base URL (defaults to `https://aggregator-api.kyberswap.com/ronin/api/v1`).
-- `KYBER_CLIENT_ID` – Optional Kyber client id for request headers (defaults to `CraftWorldBets`).
+- `RONIN_RPC` – Ronin RPC URL (defaults to `https://api.roninchain.com/rpc`).
+- `OPERATOR_PRIVATE_KEY` – Private key for the operator that calls `settleBet` (required for settlement).
+- `VAULT_LEDGER_ADDRESS` – Deployed VaultLedger contract address (required for settlement).
 - `DYNW_TOKEN_ADDRESS` – DYNW token address (defaults to `0x17ff4EA5dD318E5FAf7f5554667d65abEC96Ff57`).
-- `WRON_ADDRESS` – WRON token address (defaults to `0xe514d9deb7966c8be0ca922de8a064264ea6bcd4`).
-
-Generate a new master key with:
-
-```bash
-openssl rand -hex 32
-```
+- `WRON_ADDRESS` – WRON token address (optional, if WRON support is enabled).
+- `TREASURY_ADDRESS` – Treasury address used at contract deployment.
+- `FEE_RECIPIENT` – Fee recipient address used at contract deployment.
+- `FEE_BPS` – Fee in basis points used at contract deployment.
 
 ### Token assets
 
