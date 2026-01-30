@@ -5,15 +5,22 @@ import "./index.css";
 import App from "./App.tsx";
 import Privacy from "./pages/Privacy.tsx";
 import Terms from "./pages/Terms.tsx";
+import Token from "./pages/Token.tsx";
+import Swap from "./pages/Swap.tsx";
+import { WalletProvider } from "./lib/wallet";
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<App />} />
-        <Route path="/terms" element={<Terms />} />
-        <Route path="/privacy" element={<Privacy />} />
-      </Routes>
-    </BrowserRouter>
+    <WalletProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<App />} />
+          <Route path="/swap" element={<Swap />} />
+          <Route path="/token" element={<Token />} />
+          <Route path="/terms" element={<Terms />} />
+          <Route path="/privacy" element={<Privacy />} />
+        </Routes>
+      </BrowserRouter>
+    </WalletProvider>
   </StrictMode>,
 )

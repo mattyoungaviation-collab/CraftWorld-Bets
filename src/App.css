@@ -910,3 +910,78 @@ select {
 .site-footer-links a:hover {
   text-decoration: underline;
 }
+
+.header-links {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.swap-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.swap-toggle {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.swap-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.transfer-card {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.token-hero {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 24px;
+  align-items: center;
+}
+
+.token-logo {
+  width: 220px;
+  height: 220px;
+  object-fit: contain;
+  border-radius: 16px;
+  background: #f1f5f9;
+  padding: 16px;
+}
+
+.token-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.token-banner {
+  width: 100%;
+  border-radius: 12px;
+  display: block;
+}
+
+@media (max-width: 720px) {
+  .token-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .token-logo {
+    width: 100%;
+    height: auto;
+    max-width: 260px;
+  }
+}
