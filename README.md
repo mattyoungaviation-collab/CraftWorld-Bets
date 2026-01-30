@@ -112,3 +112,36 @@ To make the contract readable on the Ronin explorer, verify it after deployment:
 4. If the explorer asks for metadata, upload `BetPaymentRouter.metadata.json`.
 
 Once verified, the explorer will show the full source and ABI for anyone to read.
+
+## DYNW Integration
+
+The DynoWager (DYNW) integration pulls balances, prices, swaps, and game-wallet transfers from Ronin Mainnet.
+
+### Frontend configuration (Vite)
+
+Set the following environment variables in your frontend `.env` file:
+
+- `VITE_WALLETCONNECT_PROJECT_ID` – WalletConnect project ID (required for wallet connection).
+- `VITE_KATANA_ROUTER_ADDRESS` – Katana router contract address.
+- `VITE_WRON_ADDRESS` – Wrapped RON (WRON) token address.
+- `VITE_KATANA_FACTORY_ADDRESS` – Katana factory address (optional if you set the pair address).
+- `VITE_KATANA_PAIR_ADDRESS` – Known DYNW/WRON pair address (optional if factory is set).
+- `VITE_MAX_SWAP_RON` – Max swap size in RON (defaults to `1`).
+
+If the factory address is unavailable, set `VITE_KATANA_PAIR_ADDRESS` directly so the app can load pool reserves and price.
+
+### Server configuration
+
+Set a placeholder or per-user game wallet address with:
+
+- `GAME_WALLET_ADDRESS` – DYNW destination for game-wallet transfers (replace with real per-user assignment).
+- `GAME_WALLET_PRIVATE_KEY` – Private key for the game wallet signer (required for backend swaps from game wallet balances).
+- `RONIN_RPC` – Ronin RPC URL for server-side swap execution (defaults to `https://api.roninchain.com/rpc`).
+- `KATANA_ROUTER_ADDRESS` – Katana router address used by the server swap endpoint.
+- `WRON_ADDRESS` – Wrapped RON address used by the server swap endpoint.
+
+### Token assets
+
+This repo includes lightweight SVG placeholders (`public/dynowager-300.svg` and `public/dynowager-banner-1280x230.svg`)
+to avoid committing binary assets. Replace them with the official PNG/JPG files during deployment if needed and update
+the references in `src/pages/Token.tsx`.
