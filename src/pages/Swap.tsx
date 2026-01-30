@@ -26,6 +26,8 @@ const ERC20_TRANSFER = "0xa9059cbb";
 const ROUTER_ABI = [
   "function swapExactETHForTokens(uint amountOutMin, address[] path, address to, uint deadline) payable returns (uint[] amounts)",
   "function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline) returns (uint[] amounts)",
+  "function swapExactETHForTokensSupportingFeeOnTransferTokens(uint amountOutMin, address[] path, address to, uint deadline) payable",
+  "function swapExactTokensForETHSupportingFeeOnTransferTokens(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline)",
 ];
 
 function padAddress(address: string) {
@@ -217,9 +219,21 @@ export default function Swap() {
     }
 
     try {
+      const provider = getRoninProvider();
+      const [routerCode, wronCode] = await Promise.all([
+        provider.getCode(KATANA_ROUTER_ADDRESS),
+        provider.getCode(WRON_TOKEN.address),
+      ]);
+      if (!routerCode || routerCode === "0x") {
+        setSwapError("Katana router address is not a contract. Check VITE_KATANA_ROUTER_ADDRESS.");
+        return;
+      }
+      if (!wronCode || wronCode === "0x") {
+        setSwapError("WRON address is not a contract. Check VITE_WRON_ADDRESS.");
+        return;
+      }
       setSwapStatus("Refreshing pool...");
       await refreshPool();
-      const provider = getRoninProvider();
       const { reserveRon: reserveRonLatest, reserveDynw: reserveDynwLatest } = await getDynwRonReserves(provider);
       const reserveIn = direction === "RON_TO_DYNW" ? reserveRonLatest : reserveDynwLatest;
       const reserveOut = direction === "RON_TO_DYNW" ? reserveDynwLatest : reserveRonLatest;
@@ -289,8 +303,19 @@ export default function Swap() {
         direction === "RON_TO_DYNW" && sendToGameWallet && gameWalletAddress ? gameWalletAddress : wallet;
       const data =
         direction === "RON_TO_DYNW"
-          ? iface.encodeFunctionData("swapExactETHForTokens", [minOut, path, swapRecipient, deadline])
-          : iface.encodeFunctionData("swapExactTokensForETH", [amountParsed, minOut, path, wallet, deadline]);
+          ? iface.encodeFunctionData("swapExactETHForTokensSupportingFeeOnTransferTokens", [
+              minOut,
+              path,
+              swapRecipient,
+              deadline,
+            ])
+          : iface.encodeFunctionData("swapExactTokensForETHSupportingFeeOnTransferTokens", [
+              amountParsed,
+              minOut,
+              path,
+              wallet,
+              deadline,
+            ]);
       const txHash = await walletProvider.request({
         method: "eth_sendTransaction",
         params: [

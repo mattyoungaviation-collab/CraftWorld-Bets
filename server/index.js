@@ -96,6 +96,8 @@ const ERC20_ABI = [
 const ROUTER_ABI = [
   "function swapExactETHForTokens(uint amountOutMin, address[] path, address to, uint deadline) payable returns (uint[] amounts)",
   "function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline) returns (uint[] amounts)",
+  "function swapExactETHForTokensSupportingFeeOnTransferTokens(uint amountOutMin, address[] path, address to, uint deadline) payable",
+  "function swapExactTokensForETHSupportingFeeOnTransferTokens(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline)",
 ];
 const roninProvider = new JsonRpcProvider(RONIN_RPC);
 
@@ -340,6 +342,17 @@ app.post("/api/game-wallet/swap", async (req, res) => {
       return res.status(400).json({ error: "Invalid swap amounts" });
     }
 
+    const [routerCode, wronCode] = await Promise.all([
+      roninProvider.getCode(KATANA_ROUTER_ADDRESS),
+      roninProvider.getCode(WRON_ADDRESS),
+    ]);
+    if (!routerCode || routerCode === "0x") {
+      return res.status(400).json({ error: "KATANA_ROUTER_ADDRESS does not point to a contract" });
+    }
+    if (!wronCode || wronCode === "0x") {
+      return res.status(400).json({ error: "WRON_ADDRESS does not point to a contract" });
+    }
+
     const wallet = new Wallet(GAME_WALLET_PRIVATE_KEY, roninProvider);
     const router = new Contract(KATANA_ROUTER_ADDRESS, ROUTER_ABI, wallet);
     const swapDeadline = Number(deadline) || Math.floor(Date.now() / 1000) + 10 * 60;
@@ -352,7 +365,7 @@ app.post("/api/game-wallet/swap", async (req, res) => {
         const approveTx = await token.approve(KATANA_ROUTER_ADDRESS, amountInValue);
         await approveTx.wait();
       }
-      const tx = await router.swapExactTokensForETH(
+      const tx = await router.swapExactTokensForETHSupportingFeeOnTransferTokens(
         amountInValue,
         minOutValue,
         [DYNW_TOKEN_ADDRESS, WRON_ADDRESS],
@@ -364,7 +377,7 @@ app.post("/api/game-wallet/swap", async (req, res) => {
     }
 
     if (direction === "RON_TO_DYNW") {
-      const tx = await router.swapExactETHForTokens(
+      const tx = await router.swapExactETHForTokensSupportingFeeOnTransferTokens(
         minOutValue,
         [WRON_ADDRESS, DYNW_TOKEN_ADDRESS],
         toAddress,
