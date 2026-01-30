@@ -50,7 +50,7 @@ export default function Terms() {
           <p>The Service is a Ronin-based application that may allow users to:</p>
           <ul>
             <li>Connect a wallet (e.g., Ronin Wallet) to interact with the Service,</li>
-            <li>Swap tokens and/or acquire a native token used within the Service (“DynoWager Token” or “DYNW”),</li>
+            <li>Deposit DYNW into a non-custodial Vault Ledger smart contract,</li>
             <li>
               Place bets/predictions on Craft World–themed outcomes (e.g., leaderboard placements, Masterpiece results),
             </li>
@@ -62,7 +62,7 @@ export default function Terms() {
           <h2>4. No Financial, Investment, or Tax Advice</h2>
           <p>
             Nothing on the Service constitutes financial, investment, legal, or tax advice. You are solely responsible
-            for your decisions and actions, including swapping tokens and placing bets.
+            for your decisions and actions, including depositing tokens and placing bets.
           </p>
         </section>
 
@@ -143,31 +143,18 @@ export default function Terms() {
         <section className="policy-section">
           <h2>9. Fees</h2>
           <p>
-            The Service may charge fees (e.g., swap fees, market fees, settlement fees). Any applicable fees will be
-            disclosed in the user interface and/or documentation. Fees may change over time but will not apply
-            retroactively to already-placed wagers.
+            The Service may charge fees (e.g., market fees, settlement fees). Any applicable fees will be disclosed in
+            the user interface and/or documentation. Fees may change over time but will not apply retroactively to
+            already-placed wagers.
           </p>
         </section>
 
         <section className="policy-section">
           <h2>10. Custody; In-App Balances (IMPORTANT)</h2>
-          <p>The Service may be implemented in one of the following ways:</p>
-          <h3>A) Non-custodial design (preferred)</h3>
+          <p>The Service uses a non-custodial design:</p>
           <p>
-            Users retain control of their wallet. Funds may be held by smart contracts (escrow) that enforce the betting
-            rules.
-          </p>
-          <h3>B) Hosted/in-app balance design (if enabled)</h3>
-          <p>
-            If the Service offers an in-app or “game wallet” balance to streamline betting and reduce repeated
-            signatures, you authorize the Service to use that balance strictly to place wagers, collect fees, and
-            distribute winnings consistent with market rules. You understand that hosted balances introduce additional
-            risks, including operational or security incidents.
-          </p>
-          <p>
-            <strong>
-              The Service will disclose in the UI whether a market uses non-custodial escrow or a hosted balance model.
-            </strong>
+            Users retain control of their wallet. Funds are deposited into a Vault Ledger smart contract that enforces
+            the betting rules, maintains an internal ledger, and allows withdrawals at any time.
           </p>
         </section>
 
@@ -188,7 +175,7 @@ export default function Terms() {
           <h2>12. Taxes</h2>
           <p>
             You are responsible for determining and paying any taxes arising from your use of the Service, including
-            swaps and winnings.
+            deposits and winnings.
           </p>
         </section>
 

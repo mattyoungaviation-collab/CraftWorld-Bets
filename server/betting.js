@@ -8,7 +8,6 @@ export function makeStore(dataDir) {
   const resultsPath = path.join(dataDir, "results.json");
   const carryPath = path.join(dataDir, "carryover.json");
   const housePath = path.join(dataDir, "house.json");
-  const pendingPath = path.join(dataDir, "pending.json");
   const walletsPath = path.join(dataDir, "wallets.json");
 
   function readJson(file, fallback) {
@@ -25,7 +24,6 @@ export function makeStore(dataDir) {
 
   const store = {
     bets: readJson(betsPath, []),
-    pendingBets: readJson(pendingPath, []),
     results: readJson(resultsPath, {}),
     carryover: readJson(carryPath, { "1": 0, "2": 0, "3": 0 }),
     house: readJson(housePath, { total: 0, byMasterpiece: {} }),
@@ -34,7 +32,6 @@ export function makeStore(dataDir) {
 
   function persist() {
     writeJson(betsPath, store.bets);
-    writeJson(pendingPath, store.pendingBets);
     writeJson(resultsPath, store.results);
     writeJson(carryPath, store.carryover);
     writeJson(housePath, store.house);
