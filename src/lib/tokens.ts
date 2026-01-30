@@ -23,6 +23,9 @@ export const KATANA_FACTORY_ADDRESS =
   (import.meta.env.VITE_KATANA_FACTORY_ADDRESS as string | undefined) || "";
 export const KATANA_PAIR_ADDRESS =
   (import.meta.env.VITE_KATANA_PAIR_ADDRESS as string | undefined) || "";
+export const VAULT_LEDGER_ADDRESS =
+  (import.meta.env.VITE_VAULT_LEDGER_ADDRESS as string | undefined) || "";
+export const DYNW_VAULT_ADDRESS = VAULT_LEDGER_ADDRESS;
 
 export function formatUnits(value: bigint, decimals = DYNW_TOKEN.decimals) {
   return ethersFormatUnits(value, decimals);
