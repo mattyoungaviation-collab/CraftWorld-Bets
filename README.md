@@ -76,6 +76,9 @@ export default defineConfig([
 
 The API stores bets on disk. Set `BETS_DATA_DIR` to a persistent volume path (for example, `/var/data` on Render) so redeploys keep existing bets. If unset, the server falls back to `server/data`.
 
+The game wallet system uses Postgres via Prisma for user and wallet mappings. Configure `DATABASE_URL` and run migrations
+before starting the server.
+
 ## Running locally
 
 Install dependencies, then start the dev server:
@@ -86,6 +89,25 @@ npm run dev
 ```
 
 Make sure you have a `.env` file (or environment variables) configured with the values below so the swap UI and game-wallet flows can function.
+
+### Database setup
+
+1. Create a Postgres database and set `DATABASE_URL`.
+2. Run migrations:
+
+```bash
+npx prisma migrate deploy
+```
+
+### Game wallet smoke test
+
+With the server running, you can test auth + wallet creation:
+
+```bash
+TEST_LOGIN_PRIVATE_KEY=0x... \
+BASE_URL=http://localhost:3000 \
+node scripts/game-wallet-smoke.mjs
+```
 
 ## Smart contract payment routing
 
@@ -143,16 +165,35 @@ If the factory address is unavailable, set `VITE_KATANA_PAIR_ADDRESS` directly s
 
 ### Server configuration
 
-Set a placeholder or per-user game wallet address with:
+Set the server environment variables for game wallet, swaps, and betting:
 
-- `GAME_WALLET_ADDRESS` – DYNW destination for game-wallet transfers (replace with real per-user assignment).
-- `GAME_WALLET_PRIVATE_KEY` – Private key for the game wallet signer (required for backend swaps from game wallet balances).
+- `MASTER_KEY` – 32-byte hex/base64 key used to encrypt game wallet private keys (required).
+- `JWT_SECRET` – JWT signing secret for auth tokens (required).
+- `DATABASE_URL` – Postgres connection string (required).
+- `BET_ESCROW_ADDRESS` – Escrow contract address for wager transfers (required).
+- `SERVICE_FEE_ADDRESS` – Service fee recipient address (required).
+- `BET_MAX_AMOUNT` – Optional max bet size (token units).
 - `RONIN_RPC` – Ronin RPC URL for server-side swap execution (defaults to `https://api.roninchain.com/rpc`).
 - `KYBER_BASE_URL` – Kyber aggregator base URL (defaults to `https://aggregator-api.kyberswap.com/ronin/api/v1`).
 - `KYBER_CLIENT_ID` – Optional Kyber client id for request headers (defaults to `CraftWorldBets`).
+- `DYNW_TOKEN_ADDRESS` – DYNW token address (defaults to `0x17ff4EA5dD318E5FAf7f5554667d65abEC96Ff57`).
+- `WRON_ADDRESS` – WRON token address (defaults to `0xe514d9deb7966c8be0ca922de8a064264ea6bcd4`).
+
+Generate a new master key with:
+
+```bash
+openssl rand -hex 32
+```
 
 ### Token assets
 
 This repo includes lightweight SVG placeholders (`public/dynowager-300.svg` and `public/dynowager-banner-1280x230.svg`)
 to avoid committing binary assets. Replace them with the official PNG/JPG files during deployment if needed and update
 the references in `src/pages/Token.tsx`.
+
+## Render deployment notes
+
+1. Provision a Postgres database and set `DATABASE_URL` in Render.
+2. Add a persistent disk and set `BETS_DATA_DIR` (e.g., `/var/data`).
+3. Set the required environment variables from the server configuration section above.
+4. Run `npx prisma migrate deploy` as part of your build or start command before `node server/index.js`.
