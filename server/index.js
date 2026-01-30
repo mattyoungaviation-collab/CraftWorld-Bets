@@ -196,12 +196,16 @@ function normalizeWallet(address) {
   return trimmed;
 }
 
+function normalizeKyberAddress(address) {
+  return normalizeWallet(address) || undefined;
+}
+
 async function fetchKyber(pathname, { method = "GET", body } = {}) {
   const response = await fetch(`${KYBER_BASE_URL}${pathname}`, {
     method,
     headers: {
       ...(body ? { "content-type": "application/json" } : {}),
-      "X-Client-Id": KYBER_CLIENT_ID,
+      "x-client-id": KYBER_CLIENT_ID,
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -229,6 +233,18 @@ function extractBuildData(buildPayload) {
   return buildPayload?.data || buildPayload?.result || buildPayload;
 }
 
+function normalizeKyberBuild(buildData) {
+  if (!buildData) return null;
+  const routerAddress = buildData.routerAddress || buildData.to;
+  return {
+    to: routerAddress || null,
+    data: buildData.data || null,
+    value: buildData.transactionValue || buildData.value || "0",
+    approvalSpender: buildData.routerAddress || buildData.tokenApproveAddress || buildData.to || null,
+    raw: buildData,
+  };
+}
+
 async function buildKyberSwap({ tokenIn, tokenOut, amountIn, sender, recipient, slippageTolerance, deadline }) {
   const params = new URLSearchParams({
     tokenIn,
@@ -247,18 +263,19 @@ async function buildKyberSwap({ tokenIn, tokenOut, amountIn, sender, recipient, 
     method: "POST",
     body: {
       routeSummary,
-      sender,
-      recipient,
+      sender: normalizeKyberAddress(sender),
+      recipient: normalizeKyberAddress(recipient),
       slippageTolerance,
       deadline,
       source: "CraftWorldBets",
     },
   });
   const buildData = extractBuildData(buildPayload);
-  if (!buildData?.to || !buildData?.data) {
+  if (!buildData?.data || !(buildData?.routerAddress || buildData?.to)) {
     throw new Error("Kyber build data missing.");
   }
-  return { buildData, routeSummary };
+  const normalizedBuild = normalizeKyberBuild(buildData);
+  return { buildData: normalizedBuild, routeSummary };
 }
 
 function ensureWalletRecord(address) {
@@ -385,11 +402,34 @@ app.get("/api/game-wallet", (_req, res) => {
 
 app.post("/api/kyber/route/build", async (req, res) => {
   try {
-    const { tokenIn, tokenOut, amountIn, sender, recipient, slippageTolerance, deadline } = req.body || {};
-    if (!tokenIn || !tokenOut || !amountIn || !sender) {
-      return res.status(400).json({ error: "tokenIn, tokenOut, amountIn, and sender are required" });
-    }
+    const { routeSummary, slippageTolerance, recipient, sender, deadline, tokenIn, tokenOut, amountIn } =
+      req.body || {};
     const slippageBps = Number.isFinite(Number(slippageTolerance)) ? Number(slippageTolerance) : 50;
+    const normalizedSender = normalizeKyberAddress(sender);
+    const normalizedRecipient = normalizeKyberAddress(recipient);
+    if (routeSummary) {
+      const payload = await fetchKyber("/route/build", {
+        method: "POST",
+        body: {
+          routeSummary,
+          slippageTolerance: slippageBps,
+          recipient: normalizedRecipient,
+          sender: normalizedSender,
+          deadline,
+        },
+      });
+      const build = extractBuildData(payload);
+      if (!build?.data || !(build?.routerAddress || build?.to)) {
+        return res.status(502).json({ error: "Kyber build response missing routerAddress/data" });
+      }
+      const normalized = normalizeKyberBuild(build);
+      return res.json({ ok: true, ...normalized, raw: payload });
+    }
+
+    if (!tokenIn || !tokenOut || !amountIn || !sender) {
+      return res.status(400).json({ error: "routeSummary or tokenIn, tokenOut, amountIn, and sender are required" });
+    }
+
     const result = await buildKyberSwap({
       tokenIn,
       tokenOut,
@@ -399,7 +439,7 @@ app.post("/api/kyber/route/build", async (req, res) => {
       slippageTolerance: slippageBps,
       deadline,
     });
-    return res.json({ ok: true, buildData: result.buildData, routeSummary: result.routeSummary });
+    return res.json({ ok: true, ...result.buildData, routeSummary: result.routeSummary });
   } catch (e) {
     return res.status(500).json({ error: String(e) });
   }
@@ -435,7 +475,7 @@ app.post("/api/game-wallet/swap", async (req, res) => {
         slippageTolerance: slippageBps,
         deadline: swapDeadline,
       });
-      const approvalSpender = buildData.routerAddress || buildData.tokenApproveAddress || buildData.to;
+      const approvalSpender = buildData.approvalSpender || buildData.to;
       const token = new Contract(DYNW_TOKEN_ADDRESS, ERC20_ABI, wallet);
       const allowance = await token.allowance(wallet.address, approvalSpender);
       if (allowance < amountInValue) {

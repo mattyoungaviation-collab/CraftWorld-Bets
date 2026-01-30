@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { DYNW_TOKEN } from "./tokens";
+import { DYNW_TOKEN, WRON_TOKEN } from "./tokens";
 
 const ERC20_BALANCE_OF = "0x70a08231";
 
@@ -10,19 +10,30 @@ function padAddress(address: string) {
 export function useRoninBalances(wallet: string | null, walletProvider: any) {
   const [ronBalance, setRonBalance] = useState<bigint | null>(null);
   const [dynwBalance, setDynwBalance] = useState<bigint | null>(null);
+  const [wronBalance, setWronBalance] = useState<bigint | null>(null);
 
   const refresh = useCallback(async () => {
     if (!wallet || !walletProvider) return;
     try {
-      const [ronHex, dynwHex] = await Promise.all([
+      const balanceCalls = [
         walletProvider.request({ method: "eth_getBalance", params: [wallet, "latest"] }),
         walletProvider.request({
           method: "eth_call",
           params: [{ to: DYNW_TOKEN.address, data: `${ERC20_BALANCE_OF}${padAddress(wallet)}` }, "latest"],
         }),
-      ]);
+      ];
+      if (WRON_TOKEN.address) {
+        balanceCalls.push(
+          walletProvider.request({
+            method: "eth_call",
+            params: [{ to: WRON_TOKEN.address, data: `${ERC20_BALANCE_OF}${padAddress(wallet)}` }, "latest"],
+          }),
+        );
+      }
+      const [ronHex, dynwHex, wronHex] = await Promise.all(balanceCalls);
       setRonBalance(BigInt(ronHex));
       setDynwBalance(BigInt(dynwHex));
+      setWronBalance(WRON_TOKEN.address && wronHex ? BigInt(wronHex) : null);
     } catch (e) {
       console.error(e);
     }
@@ -32,6 +43,7 @@ export function useRoninBalances(wallet: string | null, walletProvider: any) {
     if (!wallet || !walletProvider) {
       setRonBalance(null);
       setDynwBalance(null);
+      setWronBalance(null);
       return;
     }
     refresh();
@@ -39,5 +51,5 @@ export function useRoninBalances(wallet: string | null, walletProvider: any) {
     return () => clearInterval(interval);
   }, [refresh, wallet, walletProvider]);
 
-  return { ronBalance, dynwBalance, refresh };
+  return { ronBalance, dynwBalance, wronBalance, refresh };
 }
