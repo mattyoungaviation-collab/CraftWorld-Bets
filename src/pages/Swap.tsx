@@ -43,6 +43,8 @@ function encodeTransfer(to: string, amount: bigint) {
   return `${ERC20_TRANSFER}${padAddress(to)}${padAmount(amount)}`;
 }
 
+const to0x = (addr: string) => (addr.startsWith("ronin:") ? `0x${addr.slice(6)}` : addr);
+
 function formatNumber(value: number | null, decimals = 6) {
   if (value === null || Number.isNaN(value)) return "—";
   return value.toFixed(decimals);
@@ -50,7 +52,7 @@ function formatNumber(value: number | null, decimals = 6) {
 
 export default function Swap() {
   const { wallet, provider: walletProvider, chainId, connectWallet, disconnectWallet, walletConnectEnabled } = useWallet();
-  const { ronBalance, dynwBalance, refresh: refreshBalances } = useRoninBalances(wallet, walletProvider);
+  const { ronBalance, dynwBalance, wronBalance, refresh: refreshBalances } = useRoninBalances(wallet, walletProvider);
   const { reserveRon, reserveDynw, priceRonPerDynw, error: poolError, refresh: refreshPool } = useDynwRonPool();
   const [amountIn, setAmountIn] = useState("");
   const [direction, setDirection] = useState<"RON_TO_DYNW" | "DYNW_TO_RON">("RON_TO_DYNW");
@@ -247,8 +249,12 @@ export default function Swap() {
         return;
       }
 
-      const swapRecipient =
-        direction === "RON_TO_DYNW" && sendToGameWallet && gameWalletAddress ? gameWalletAddress : wallet;
+      const buildRecipient =
+        direction === "DYNW_TO_RON"
+          ? wallet
+          : sendToGameWallet && gameWalletAddress
+            ? gameWalletAddress
+            : wallet;
       const tokenIn = direction === "RON_TO_DYNW" ? KYBER_NATIVE_TOKEN : DYNW_TOKEN.address;
       const tokenOut = direction === "RON_TO_DYNW" ? DYNW_TOKEN.address : KYBER_NATIVE_TOKEN;
       setSwapStatus("Building Kyber route...");
@@ -259,8 +265,8 @@ export default function Swap() {
           tokenIn,
           tokenOut,
           amountIn: amountParsed.toString(),
-          sender: wallet,
-          recipient: swapRecipient,
+          sender: to0x(wallet),
+          recipient: to0x(buildRecipient),
           slippageTolerance: slippageBps,
           deadline,
         }),
@@ -386,6 +392,12 @@ export default function Swap() {
             <div>RON balance</div>
             <strong>
               {wallet ? (ronBalance !== null ? formatUnits(ronBalance, 18) : "Loading...") : "Not connected"}
+            </strong>
+          </div>
+          <div className="price-pill">
+            <div>WRON balance</div>
+            <strong>
+              {wallet ? (wronBalance !== null ? formatUnits(wronBalance, 18) : "Loading...") : "Not connected"}
             </strong>
           </div>
           <div className="price-pill">

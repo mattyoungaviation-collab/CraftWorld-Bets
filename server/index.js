@@ -196,6 +196,10 @@ function normalizeWallet(address) {
   return trimmed;
 }
 
+function normalizeKyberAddress(address) {
+  return normalizeWallet(address) || undefined;
+}
+
 async function fetchKyber(pathname, { method = "GET", body } = {}) {
   const response = await fetch(`${KYBER_BASE_URL}${pathname}`, {
     method,
@@ -259,8 +263,8 @@ async function buildKyberSwap({ tokenIn, tokenOut, amountIn, sender, recipient, 
     method: "POST",
     body: {
       routeSummary,
-      sender,
-      recipient,
+      sender: normalizeKyberAddress(sender),
+      recipient: normalizeKyberAddress(recipient),
       slippageTolerance,
       deadline,
       source: "CraftWorldBets",
@@ -401,10 +405,18 @@ app.post("/api/kyber/route/build", async (req, res) => {
     const { routeSummary, slippageTolerance, recipient, sender, deadline, tokenIn, tokenOut, amountIn } =
       req.body || {};
     const slippageBps = Number.isFinite(Number(slippageTolerance)) ? Number(slippageTolerance) : 50;
+    const normalizedSender = normalizeKyberAddress(sender);
+    const normalizedRecipient = normalizeKyberAddress(recipient);
     if (routeSummary) {
       const payload = await fetchKyber("/route/build", {
         method: "POST",
-        body: { routeSummary, slippageTolerance: slippageBps, recipient, sender, deadline },
+        body: {
+          routeSummary,
+          slippageTolerance: slippageBps,
+          recipient: normalizedRecipient,
+          sender: normalizedSender,
+          deadline,
+        },
       });
       const build = extractBuildData(payload);
       if (!build?.data || !(build?.routerAddress || build?.to)) {
