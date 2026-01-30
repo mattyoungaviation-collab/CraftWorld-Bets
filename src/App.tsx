@@ -9,7 +9,6 @@ import { useVaultLedgerBalance } from "./lib/useVaultLedgerBalance";
 import {
   VAULT_LEDGER_ADDRESS,
   buildBetId,
-  buildBlackjackBetId,
   getVaultContract,
   vaultTokenAddress,
 } from "./lib/vaultLedger";
@@ -139,6 +138,17 @@ type BlackjackState = {
   activeRoundId?: number | null;
 };
 
+type BlackjackSession = {
+  id: string;
+  walletAddress: string;
+  seatId: number;
+  status: string;
+  buyInWei: bigint;
+  bankrollWei: bigint;
+  committedWei: bigint;
+  netPnlWei: bigint;
+};
+
 const COIN_SYMBOL = DYNW_TOKEN.symbol;
 const BLACKJACK_DECKS = 6;
 const BLACKJACK_HOUSE_EDGE = 0.6;
@@ -160,6 +170,17 @@ function formatTokenAmount(raw: bigint, decimals: number) {
   const fraction = raw % base;
   const fractionStr = fraction.toString().padStart(decimals, "0").slice(0, 4);
   return `${whole.toLocaleString()}.${fractionStr}`;
+}
+
+function parseBlackjackSession(raw: any): BlackjackSession | null {
+  if (!raw) return null;
+  return {
+    ...raw,
+    buyInWei: BigInt(raw.buyInWei),
+    bankrollWei: BigInt(raw.bankrollWei),
+    committedWei: BigInt(raw.committedWei),
+    netPnlWei: BigInt(raw.netPnlWei),
+  } as BlackjackSession;
 }
 
 function formatOdds(odds: number) {
@@ -402,11 +423,12 @@ export default function App() {
   const [blackjackTurnExpiresAt, setBlackjackTurnExpiresAt] = useState<number | null>(null);
   const [blackjackCooldownExpiresAt, setBlackjackCooldownExpiresAt] = useState<number | null>(null);
   const [blackjackLog, setBlackjackLog] = useState<string[]>([]);
-  const [blackjackRoundId, setBlackjackRoundId] = useState<number | null>(null);
   const [blackjackVaultBalanceWei, setBlackjackVaultBalanceWei] = useState<bigint | null>(null);
   const [blackjackVaultStatus, setBlackjackVaultStatus] = useState("");
+  const [blackjackSession, setBlackjackSession] = useState<BlackjackSession | null>(null);
+  const [blackjackBuyIn, setBlackjackBuyIn] = useState("");
+  const [blackjackSettlementStatus, setBlackjackSettlementStatus] = useState("");
   const [blackjackNow, setBlackjackNow] = useState(() => Date.now());
-  const autoStartCooldownRef = useRef<number | null>(null);
   const settlementToastRef = useRef<number | null>(null);
   const settlementPendingRef = useRef<number | null>(null);
   const coinDecimals = DYNW_TOKEN.decimals;
@@ -1365,7 +1387,6 @@ export default function App() {
     setBlackjackTurnExpiresAt(state.turnExpiresAt ?? null);
     setBlackjackCooldownExpiresAt(state.cooldownExpiresAt ?? null);
     setBlackjackLog(state.log || []);
-    setBlackjackRoundId(state.roundId ?? null);
   }
 
   async function fetchBlackjackState() {
@@ -1379,12 +1400,40 @@ export default function App() {
     }
   }
 
+  async function fetchBlackjackSession() {
+    if (!wallet || !isSignedIn) {
+      setBlackjackSession(null);
+      return;
+    }
+    try {
+      const r = await authFetch("/api/blackjack/session");
+      const j = await r.json();
+      if (!r.ok) {
+        throw new Error(j?.error || "Failed to load blackjack session");
+      }
+      const session = parseBlackjackSession(j.session);
+      setBlackjackSession(session);
+      if (session) {
+        setBlackjackBuyIn(formatUnits(session.buyInWei, DYNW_TOKEN.decimals));
+        setBlackjackSeats((prev) =>
+          prev.map((seat) =>
+            seat.id === session.seatId ? { ...seat, bankroll: Number(formatUnits(session.bankrollWei, DYNW_TOKEN.decimals)) } : seat
+          )
+        );
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
   useEffect(() => {
     let interval: number | null = null;
     fetchBlackjackState();
+    fetchBlackjackSession();
     if (activeTab === "blackjack") {
       interval = window.setInterval(() => {
         fetchBlackjackState();
+        fetchBlackjackSession();
       }, 2000);
     }
     return () => {
@@ -1429,14 +1478,6 @@ export default function App() {
       }
       const balance = BigInt(j.balance);
       setBlackjackVaultBalanceWei(balance);
-      const normalized = address.toLowerCase();
-      setBlackjackSeats((prev) =>
-        prev.map((seat) =>
-          seat.walletAddress && seat.walletAddress.toLowerCase() === normalized
-            ? { ...seat, bankroll: Number(formatUnits(balance, DYNW_TOKEN.decimals)) }
-            : seat
-        )
-      );
     } catch (e: any) {
       console.error(e);
       setBlackjackVaultBalanceWei(null);
@@ -1444,29 +1485,27 @@ export default function App() {
     }
   }
 
-  async function sendBlackjackAction(endpoint: string, payload?: Record<string, unknown>) {
-    try {
-      const r = await fetch(endpoint, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload || {}),
-      });
-      const j = await r.json();
-      if (!r.ok || !j?.state) {
-        throw new Error(j?.error || "Blackjack update failed");
-      }
-      applyBlackjackState(j.state as BlackjackState);
-      if (wallet && isSignedIn) {
-        refreshBlackjackVaultBalance(wallet);
-      }
-    } catch (e) {
-      console.error(e);
+  async function sendBlackjackAuthAction(endpoint: string, payload?: Record<string, unknown>) {
+    const r = await authFetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
+    const j = await r.json();
+    if (!r.ok || !j?.state) {
+      throw new Error(j?.error || "Blackjack update failed");
     }
+    applyBlackjackState(j.state as BlackjackState);
+    if (j.session) {
+      setBlackjackSession(parseBlackjackSession(j.session));
+    }
+    return j;
   }
 
   function updateSeat(id: number, updates: Partial<BlackjackSeat>) {
     setBlackjackSeats((prev) => prev.map((seat) => (seat.id === id ? { ...seat, ...updates } : seat)));
-    sendBlackjackAction("/api/blackjack/seat", { seatId: id, walletAddress: wallet, ...updates });
+    if (!wallet || !isSignedIn) return;
+    sendBlackjackAuthAction("/api/blackjack/seat", { seatId: id, ...updates }).catch((e) => console.error(e));
   }
 
   function joinSeat(id: number) {
@@ -1474,134 +1513,131 @@ export default function App() {
       setToast("Connect your wallet to join the blackjack table.");
       return;
     }
+    if (!isSignedIn) {
+      setToast("Sign in to join the blackjack table.");
+      return;
+    }
     const name = username.trim();
-    sendBlackjackAction("/api/blackjack/join", { seatId: id, name: name || undefined, walletAddress: wallet });
+    sendBlackjackAuthAction("/api/blackjack/join", { seatId: id, name: name || undefined }).catch((e) =>
+      console.error(e)
+    );
   }
 
-  function leaveSeat(id: number) {
-    sendBlackjackAction("/api/blackjack/leave", { seatId: id, walletAddress: wallet });
-  }
-
-  function shuffleShoe() {
-    sendBlackjackAction("/api/blackjack/shuffle");
-  }
-
-  function startBlackjackRound() {
-    sendBlackjackAction("/api/blackjack/start");
-  }
-
-  async function lockBlackjackBet(seat: BlackjackSeat) {
-    if (!wallet || !walletProvider) {
-      setToast("Connect your wallet to place a blackjack wager.");
+  async function leaveSeat() {
+    if (!wallet || !isSignedIn) {
+      setToast("Sign in to leave the blackjack table.");
       return;
     }
-    if (!isSignedIn || !loginAddress) {
-      setToast("Sign in to lock a blackjack wager.");
-      return;
-    }
-    if (!blackjackRoundId) {
-      setToast("Blackjack round is not ready yet.");
-      return;
-    }
-    setBlackjackVaultStatus("");
+    setBlackjackSettlementStatus("");
     try {
-      const betAmount = Number(seat.bet);
-      if (!Number.isFinite(betAmount) || betAmount <= 0) {
-        throw new Error("Enter a valid wager amount.");
+      setBlackjackVaultStatus("⏳ Settling table session...");
+      const j = await sendBlackjackAuthAction("/api/blackjack/leave");
+      if (j?.settlement?.txHash) {
+        setBlackjackSettlementStatus(`✅ Settlement confirmed: ${j.settlement.txHash}`);
+      } else {
+        setBlackjackSettlementStatus("✅ Session closed.");
       }
-      const vault = await getVaultContract(walletProvider);
-      if (!vault) {
-        throw new Error("Vault contract unavailable.");
-      }
-      const betAmountWei = parseUnits(String(betAmount), DYNW_TOKEN.decimals);
-      const betId = buildBlackjackBetId(blackjackRoundId, seat.id, wallet);
-      setBlackjackVaultStatus("⏳ Locking wager in the vault...");
-      const tx = await vault.contract.placeBet(betId, vaultTokenAddress(), betAmountWei);
-      await tx.wait();
-
-      const r = await authFetch("/api/blackjack/bet", {
-        method: "POST",
-        body: JSON.stringify({
-          seatId: seat.id,
-          walletAddress: wallet,
-          betAmountWei: betAmountWei.toString(),
-          roundId: blackjackRoundId,
-        }),
-      });
-      const j = await r.json();
-      if (!r.ok || !j?.state) {
-        throw new Error(j?.error || "Failed to record blackjack bet.");
-      }
-      applyBlackjackState(j.state as BlackjackState);
-      setBlackjackVaultStatus("✅ Wager locked for the next hand.");
+      setBlackjackSession(null);
       refreshBlackjackVaultBalance(wallet);
     } catch (e: any) {
       setBlackjackVaultStatus(`❌ ${e?.message || String(e)}`);
     }
   }
 
-  function handleHit(seatId: number) {
-    sendBlackjackAction("/api/blackjack/hit", { seatId, walletAddress: wallet });
+  function shuffleShoe() {
+    fetch("/api/blackjack/shuffle", { method: "POST" })
+      .then((r) => r.json())
+      .then((j) => {
+        if (j?.state) applyBlackjackState(j.state as BlackjackState);
+      })
+      .catch((e) => console.error(e));
   }
 
-  function handleStand(seatId: number) {
-    sendBlackjackAction("/api/blackjack/stand", { seatId, walletAddress: wallet });
-  }
-
-  async function handleDouble(seatId: number) {
-    const seat = blackjackSeats.find((entry) => entry.id === seatId);
-    if (!seat || !wallet || !walletProvider) {
+  async function handleBuyIn(seatId: number) {
+    if (!wallet || !walletProvider) {
+      setToast("Connect your wallet to buy in.");
+      return;
+    }
+    if (!isSignedIn) {
+      setToast("Sign in to buy in.");
       return;
     }
     try {
-      const activeHandIndex = blackjackActiveHand ?? seat.activeHand ?? 0;
-      const extraBet = seat.bets[activeHandIndex] ?? seat.bet;
-      const extraBetWei = parseUnits(String(extraBet), DYNW_TOKEN.decimals);
-      if (seat.activeBetId) {
-        const vault = await getVaultContract(walletProvider);
-        if (!vault) throw new Error("Vault contract unavailable.");
-        const tx = await vault.contract.placeBet(seat.activeBetId, vaultTokenAddress(), extraBetWei);
-        await tx.wait();
+      const amountRaw = parseUnits(blackjackBuyIn || "0", DYNW_TOKEN.decimals);
+      if (amountRaw <= 0n) {
+        setBlackjackVaultStatus("❌ Enter a valid buy-in amount.");
+        return;
       }
-      await sendBlackjackAction("/api/blackjack/double", {
+      setBlackjackVaultStatus("⏳ Reserving table buy-in...");
+      const preflight = await sendBlackjackAuthAction("/api/blackjack/buyin", {
+        amountWei: amountRaw.toString(),
         seatId,
-        walletAddress: wallet,
-        betAmountWei: extraBetWei.toString(),
       });
-    } catch (e) {
-      console.error(e);
-      setBlackjackVaultStatus(`❌ ${e instanceof Error ? e.message : String(e)}`);
+      const session = parseBlackjackSession(preflight.session);
+      setBlackjackSession(session);
+      if (preflight.needsStake) {
+        const missingStakeWei = BigInt(preflight.missingStakeWei || "0");
+        if (missingStakeWei > 0n) {
+          const vault = await getVaultContract(walletProvider);
+          if (!vault) throw new Error("Vault contract unavailable.");
+          setBlackjackVaultStatus("⏳ Confirm the buy-in signature...");
+          const tx = await vault.contract.placeBet(preflight.betId, vaultTokenAddress(), missingStakeWei);
+          await tx.wait();
+          setBlackjackVaultStatus("⏳ Finalizing table buy-in...");
+          const confirmed = await sendBlackjackAuthAction("/api/blackjack/buyin", {
+            amountWei: amountRaw.toString(),
+            seatId,
+          });
+          setBlackjackSession(parseBlackjackSession(confirmed.session));
+        }
+      }
+      setBlackjackVaultStatus("✅ Table buy-in ready.");
+      refreshBlackjackVaultBalance(wallet);
+    } catch (e: any) {
+      setBlackjackVaultStatus(`❌ ${e?.message || String(e)}`);
     }
   }
 
-  async function handleSplit(seatId: number) {
-    const seat = blackjackSeats.find((entry) => entry.id === seatId);
-    if (!seat || !wallet || !walletProvider) {
+  async function handleDeal(seat: BlackjackSeat) {
+    if (!wallet || !isSignedIn) {
+      setToast("Sign in to deal a blackjack hand.");
       return;
     }
     try {
-      const activeHandIndex = blackjackActiveHand ?? seat.activeHand ?? 0;
-      const extraBet = seat.bets[activeHandIndex] ?? seat.bet;
-      const extraBetWei = parseUnits(String(extraBet), DYNW_TOKEN.decimals);
-      if (seat.activeBetId) {
-        const vault = await getVaultContract(walletProvider);
-        if (!vault) throw new Error("Vault contract unavailable.");
-        const tx = await vault.contract.placeBet(seat.activeBetId, vaultTokenAddress(), extraBetWei);
-        await tx.wait();
+      const wagerWei = parseUnits(String(seat.bet), DYNW_TOKEN.decimals);
+      setBlackjackVaultStatus("⏳ Dealing a new hand...");
+      await sendBlackjackAuthAction("/api/blackjack/deal", { amountWei: wagerWei.toString() });
+      setBlackjackVaultStatus("");
+      fetchBlackjackSession();
+    } catch (e: any) {
+      setBlackjackVaultStatus(`❌ ${e?.message || String(e)}`);
+    }
+  }
+
+  async function handleAction(action: "hit" | "stand" | "double" | "split", seat: BlackjackSeat) {
+    if (!wallet || !isSignedIn) return;
+    try {
+      const payload: Record<string, unknown> = { action };
+      if (action === "double" || action === "split") {
+        const activeHandIndex = blackjackActiveHand ?? seat.activeHand ?? 0;
+        const extraBet = seat.bets[activeHandIndex] ?? seat.bet;
+        const extraBetWei = parseUnits(String(extraBet), DYNW_TOKEN.decimals);
+        payload.amountWei = extraBetWei.toString();
       }
-      await sendBlackjackAction("/api/blackjack/split", {
-        seatId,
-        walletAddress: wallet,
-        betAmountWei: extraBetWei.toString(),
-      });
-    } catch (e) {
-      console.error(e);
-      setBlackjackVaultStatus(`❌ ${e instanceof Error ? e.message : String(e)}`);
+      await sendBlackjackAuthAction("/api/blackjack/action", payload);
+      fetchBlackjackSession();
+    } catch (e: any) {
+      setBlackjackVaultStatus(`❌ ${e?.message || String(e)}`);
     }
   }
 
   function resetBlackjackRound() {
-    sendBlackjackAction("/api/blackjack/reset");
+    fetch("/api/blackjack/reset", { method: "POST" })
+      .then((r) => r.json())
+      .then((j) => {
+        if (j?.state) applyBlackjackState(j.state as BlackjackState);
+      })
+      .catch((e) => console.error(e));
   }
 
   const wagerAmount = useMemo(() => Math.max(amount, 0), [amount]);
@@ -1614,26 +1650,6 @@ export default function App() {
     () => (blackjackCooldownExpiresAt ? blackjackCooldownExpiresAt - blackjackNow : null),
     [blackjackCooldownExpiresAt, blackjackNow]
   );
-
-  useEffect(() => {
-    if (activeTab !== "blackjack") return;
-    if (blackjackPhase !== "idle" && blackjackPhase !== "settled") return;
-    if (!blackjackCooldownExpiresAt || cooldownCountdownMs === null || cooldownCountdownMs > 0) {
-      return;
-    }
-    if (autoStartCooldownRef.current === blackjackCooldownExpiresAt) return;
-    const hasReadySeat = blackjackSeats.some((seat) => seat.joined && (seat.readyForNextRound ?? true));
-    if (!hasReadySeat) return;
-    autoStartCooldownRef.current = blackjackCooldownExpiresAt;
-    sendBlackjackAction("/api/blackjack/start");
-  }, [
-    activeTab,
-    blackjackPhase,
-    blackjackCooldownExpiresAt,
-    cooldownCountdownMs,
-    blackjackSeats,
-    sendBlackjackAction,
-  ]);
 
   return (
     <div className="page">
@@ -2063,13 +2079,6 @@ export default function App() {
               >
                 Reset Round
               </button>
-              <button
-                className="btn btn-primary"
-                onClick={startBlackjackRound}
-                disabled={blackjackPhase === "player" || blackjackPhase === "dealer"}
-              >
-                Deal
-              </button>
             </div>
           </div>
 
@@ -2087,6 +2096,15 @@ export default function App() {
                   : "—"}
               </div>
               <div className="subtle">Synced from Vault Ledger.</div>
+            </div>
+            <div>
+              <div className="label">Table bankroll</div>
+              <div className="title">
+                {blackjackSession?.bankrollWei !== undefined
+                  ? `${formatTokenAmount(blackjackSession.bankrollWei, DYNW_TOKEN.decimals)} ${COIN_SYMBOL}`
+                  : "—"}
+              </div>
+              <div className="subtle">Current session bankroll.</div>
             </div>
             <div>
               <div className="label">Shoe</div>
@@ -2114,6 +2132,7 @@ export default function App() {
             </div>
           </div>
           {blackjackVaultStatus && <div className="toast">{blackjackVaultStatus}</div>}
+          {blackjackSettlementStatus && <div className="toast">{blackjackSettlementStatus}</div>}
 
           <div className="dealer-row">
             <div className="dealer-title">Dealer</div>
@@ -2141,26 +2160,25 @@ export default function App() {
             {blackjackSeats.map((seat, index) => {
               const odds = blackjackOdds[index];
               const isOwner = seat.walletAddress && wallet ? seat.walletAddress === wallet : false;
+              const sessionForSeat =
+                isOwner && blackjackSession && blackjackSession.seatId === seat.id ? blackjackSession : null;
+              const sessionBankrollWei = sessionForSeat?.bankrollWei ?? null;
+              const hasActiveSession = sessionForSeat?.status === "active";
               const isActive = blackjackActiveSeat === index && blackjackPhase === "player";
               const activeHandIndex = isActive ? blackjackActiveHand ?? seat.activeHand : seat.activeHand;
               const activeHand = seat.hands[activeHandIndex] || [];
               const activeBet = seat.bets[activeHandIndex] ?? seat.bet;
               const activeBetWei = parseUnits(String(activeBet), DYNW_TOKEN.decimals);
-              const ownerVaultBalanceWei = isOwner ? blackjackVaultBalanceWei : null;
-              const isReadyForNextRound = seat.readyForNextRound ?? true;
-              const needsVaultLockPrompt =
-                seat.joined &&
-                isOwner &&
-                !isReadyForNextRound &&
-                (blackjackPhase === "idle" || blackjackPhase === "settled");
               const canAct = isActive && seat.handStatuses[activeHandIndex] === "playing" && isOwner;
               const canSplit =
                 canAct &&
                 seat.hands.length < 2 &&
                 activeHand.length === 2 &&
                 activeHand[0]?.rank === activeHand[1]?.rank &&
-                ownerVaultBalanceWei !== null &&
-                ownerVaultBalanceWei >= activeBetWei;
+                sessionBankrollWei !== null &&
+                sessionBankrollWei >= activeBetWei;
+              const canDouble =
+                canAct && activeHand.length === 2 && sessionBankrollWei !== null && sessionBankrollWei >= activeBetWei;
               return (
                 <div
                   className={`seat-card ${seat.joined ? "occupied" : "open"} ${isActive ? "active" : ""}`}
@@ -2172,7 +2190,7 @@ export default function App() {
                       <div className="subtle">{seat.joined ? seat.name || "Player" : "Open seat"}</div>
                     </div>
                     {seat.joined ? (
-                      <button className="btn btn-ghost" onClick={() => leaveSeat(seat.id)} disabled={!isOwner}>
+                      <button className="btn btn-ghost" onClick={() => leaveSeat()} disabled={!isOwner}>
                         {seat.pendingLeave ? "Leaving..." : "Leave"}
                       </button>
                     ) : (
@@ -2197,39 +2215,56 @@ export default function App() {
                         <div>
                           <label>Balance</label>
                           <div className="static-field">
-                            {isOwner && blackjackVaultBalanceWei !== null
-                              ? `${formatTokenAmount(blackjackVaultBalanceWei, DYNW_TOKEN.decimals)} ${COIN_SYMBOL}`
+                            {isOwner && sessionBankrollWei !== null
+                              ? `${formatTokenAmount(sessionBankrollWei, DYNW_TOKEN.decimals)} ${COIN_SYMBOL}`
                               : `${fmt(seat.bankroll)} ${COIN_SYMBOL}`}
                           </div>
                         </div>
+                        {isOwner && !hasActiveSession && (
+                          <div>
+                            <label>Buy-in</label>
+                            <div className="seat-bet-field">
+                              <input
+                                type="number"
+                                min={BLACKJACK_MIN_BET}
+                                value={blackjackBuyIn}
+                                onChange={(e) => setBlackjackBuyIn(e.target.value)}
+                                placeholder={`${BLACKJACK_MIN_BET}+`}
+                                disabled={blackjackPhase === "player" || blackjackPhase === "dealer"}
+                              />
+                              <button className="btn btn-primary" onClick={() => handleBuyIn(seat.id)}>
+                                {sessionForSeat?.status === "pending" ? "Confirm buy-in" : "Buy in"}
+                              </button>
+                            </div>
+                          </div>
+                        )}
                         <div>
-                          <label>Bet</label>
+                          <label>Wager</label>
                           <div className="seat-bet-field">
                             <input
                               type="number"
                               min={BLACKJACK_MIN_BET}
                               value={seat.bet}
                               onChange={(e) => updateSeat(seat.id, { bet: Number(e.target.value) })}
-                              disabled={blackjackPhase === "player" || blackjackPhase === "dealer" || !isOwner}
+                              disabled={
+                                blackjackPhase === "player" ||
+                                blackjackPhase === "dealer" ||
+                                !isOwner ||
+                                !hasActiveSession
+                              }
                             />
-                            {needsVaultLockPrompt && (
-                              <div className="seat-bet-overlay">
-                                <div className="seat-bet-overlay-card">
-                                  <div className="seat-bet-overlay-title">Lock wager for the next hand?</div>
-                                  <div className="seat-bet-overlay-actions">
-                                    <button
-                                      className="btn btn-primary"
-                                      onClick={() => lockBlackjackBet(seat)}
-                                    >
-                                      Lock wager
-                                    </button>
-                                    <button className="btn" onClick={() => leaveSeat(seat.id)}>
-                                      Leave table
-                                    </button>
-                                  </div>
-                                </div>
-                              </div>
-                            )}
+                            <button
+                              className="btn btn-primary"
+                              onClick={() => handleDeal(seat)}
+                              disabled={
+                                !isOwner ||
+                                !hasActiveSession ||
+                                blackjackPhase === "player" ||
+                                blackjackPhase === "dealer"
+                              }
+                            >
+                              Deal hand
+                            </button>
                           </div>
                         </div>
                       </div>
@@ -2277,25 +2312,20 @@ export default function App() {
                       </div>
 
                       <div className="seat-actions">
-                        <button className="btn" onClick={() => handleHit(seat.id)} disabled={!canAct}>
+                        <button className="btn" onClick={() => handleAction("hit", seat)} disabled={!canAct}>
                           Hit
                         </button>
-                        <button className="btn" onClick={() => handleStand(seat.id)} disabled={!canAct}>
+                        <button className="btn" onClick={() => handleAction("stand", seat)} disabled={!canAct}>
                           Stand
                         </button>
                         <button
                           className="btn"
-                          onClick={() => handleDouble(seat.id)}
-                          disabled={
-                            !canAct ||
-                            ownerVaultBalanceWei === null ||
-                            ownerVaultBalanceWei < activeBetWei ||
-                            activeHand.length !== 2
-                          }
+                          onClick={() => handleAction("double", seat)}
+                          disabled={!canDouble}
                         >
                           Double
                         </button>
-                        <button className="btn" onClick={() => handleSplit(seat.id)} disabled={!canSplit}>
+                        <button className="btn" onClick={() => handleAction("split", seat)} disabled={!canSplit}>
                           Split
                         </button>
                       </div>
