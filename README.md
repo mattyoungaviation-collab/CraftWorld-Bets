@@ -194,6 +194,9 @@ the references in `src/pages/Token.tsx`.
 ## Render deployment notes
 
 1. Provision a Postgres database and set `DATABASE_URL` in Render.
+   - Use the **Internal Database URL** from Render so the app can reach the database from the same private network.
 2. Add a persistent disk and set `BETS_DATA_DIR` (e.g., `/var/data`).
 3. Set the required environment variables from the server configuration section above.
-4. Run `npx prisma migrate deploy` as part of your build or start command before `node server/index.js`.
+4. Configure Render commands:
+   - **Build Command:** `npm install && npm run prisma:generate && npm run build`
+   - **Start Command:** `npm run migrate:deploy && npm start`
