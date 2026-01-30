@@ -64,9 +64,12 @@ export default function Swap() {
   const [swapError, setSwapError] = useState("");
   const [gameWalletAddress, setGameWalletAddress] = useState<string | null>(null);
   const [gameWalletBalance, setGameWalletBalance] = useState<bigint | null>(null);
+  const [gameWalletRonBalance, setGameWalletRonBalance] = useState<bigint | null>(null);
   const [promptTransferAmount, setPromptTransferAmount] = useState<bigint | null>(null);
   const [transferAmount, setTransferAmount] = useState("");
   const [transferStatus, setTransferStatus] = useState("");
+  const [sendToGameWallet, setSendToGameWallet] = useState(true);
+  const [swapFromGameWallet, setSwapFromGameWallet] = useState(true);
 
   const isWrongChain = !!wallet && chainId !== null && chainId !== RONIN_CHAIN.chainId;
   const slippageValue = Number(slippage);
@@ -147,6 +150,8 @@ export default function Swap() {
         const data = `0x70a08231${padAddress(gameWalletAddress)}`;
         const balanceHex = await provider.send("eth_call", [{ to: DYNW_TOKEN.address, data }, "latest"]);
         setGameWalletBalance(BigInt(balanceHex));
+        const ronBalance = await provider.getBalance(gameWalletAddress);
+        setGameWalletRonBalance(ronBalance);
       } catch (e) {
         console.error(e);
       }
@@ -225,6 +230,37 @@ export default function Swap() {
       const deadline = Math.floor(Date.now() / 1000) + SWAP_DEADLINE_SECONDS;
       const iface = new Interface(ROUTER_ABI);
 
+      if (direction === "DYNW_TO_RON" && swapFromGameWallet) {
+        if (!gameWalletAddress) {
+          setSwapError("Game wallet address is required for swaps from the game wallet.");
+          return;
+        }
+        setSwapStatus("Requesting game wallet swap...");
+        const response = await fetch("/api/game-wallet/swap", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            direction: "DYNW_TO_RON",
+            amountIn: amountParsed.toString(),
+            minOut: minOut.toString(),
+            recipient: wallet,
+            deadline,
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload?.error || "Game wallet swap failed.");
+        }
+        if (payload?.txHash) {
+          setSwapStatus(`Swap submitted from game wallet: ${payload.txHash}`);
+          await waitForReceipt(payload.txHash);
+        } else {
+          setSwapStatus("Swap submitted from game wallet.");
+        }
+        await refreshBalances();
+        return;
+      }
+
       if (direction === "DYNW_TO_RON") {
         const allowanceHex = await walletProvider.request({
           method: "eth_call",
@@ -249,9 +285,11 @@ export default function Swap() {
       }
 
       setSwapStatus("Signing swap transaction...");
+      const swapRecipient =
+        direction === "RON_TO_DYNW" && sendToGameWallet && gameWalletAddress ? gameWalletAddress : wallet;
       const data =
         direction === "RON_TO_DYNW"
-          ? iface.encodeFunctionData("swapExactETHForTokens", [minOut, path, wallet, deadline])
+          ? iface.encodeFunctionData("swapExactETHForTokens", [minOut, path, swapRecipient, deadline])
           : iface.encodeFunctionData("swapExactTokensForETH", [amountParsed, minOut, path, wallet, deadline]);
       const txHash = await walletProvider.request({
         method: "eth_sendTransaction",
@@ -267,7 +305,7 @@ export default function Swap() {
       await waitForReceipt(txHash as string);
       setSwapStatus("Swap confirmed on-chain.");
       await refreshBalances();
-      if (direction === "RON_TO_DYNW") {
+      if (direction === "RON_TO_DYNW" && (!sendToGameWallet || !gameWalletAddress)) {
         setPromptTransferAmount(minOut);
         setTransferAmount(formatUnits(minOut, DYNW_TOKEN.decimals));
       }
@@ -409,6 +447,38 @@ export default function Swap() {
               Max: {direction === "RON_TO_DYNW" ? `${MAX_SWAP_RON} RON` : maxDynwAllowed ? `${maxDynwAllowed.toFixed(4)} DYNW` : "—"}
             </div>
           </div>
+          {direction === "RON_TO_DYNW" && (
+            <div>
+              <label>Output destination</label>
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={sendToGameWallet}
+                  onChange={(event) => setSendToGameWallet(event.target.checked)}
+                />
+                Send DYNW to game wallet
+              </label>
+              <div className="subtle">
+                {sendToGameWallet && gameWalletAddress ? `Game wallet: ${shortAddress(gameWalletAddress)}` : "Output stays in your wallet."}
+              </div>
+            </div>
+          )}
+          {direction === "DYNW_TO_RON" && (
+            <div>
+              <label>Source wallet</label>
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={swapFromGameWallet}
+                  onChange={(event) => setSwapFromGameWallet(event.target.checked)}
+                />
+                Use game wallet DYNW balance
+              </label>
+              <div className="subtle">
+                {swapFromGameWallet ? "Swap will be executed by the server signer for the game wallet." : "Swap from your wallet."}
+              </div>
+            </div>
+          )}
           <div>
             <label>Slippage (%)</label>
             <input
@@ -475,6 +545,12 @@ export default function Swap() {
             <label>Game Wallet DYNW Balance</label>
             <div className="static-field">
               {gameWalletBalance !== null ? formatUnits(gameWalletBalance, DYNW_TOKEN.decimals) : "—"}
+            </div>
+          </div>
+          <div>
+            <label>Game Wallet RON Balance</label>
+            <div className="static-field">
+              {gameWalletRonBalance !== null ? formatUnits(gameWalletRonBalance, 18) : "—"}
             </div>
           </div>
         </div>

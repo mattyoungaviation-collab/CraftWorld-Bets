@@ -135,6 +135,10 @@ If the factory address is unavailable, set `VITE_KATANA_PAIR_ADDRESS` directly s
 Set a placeholder or per-user game wallet address with:
 
 - `GAME_WALLET_ADDRESS` – DYNW destination for game-wallet transfers (replace with real per-user assignment).
+- `GAME_WALLET_PRIVATE_KEY` – Private key for the game wallet signer (required for backend swaps from game wallet balances).
+- `RONIN_RPC` – Ronin RPC URL for server-side swap execution (defaults to `https://api.roninchain.com/rpc`).
+- `KATANA_ROUTER_ADDRESS` – Katana router address used by the server swap endpoint.
+- `WRON_ADDRESS` – Wrapped RON address used by the server swap endpoint.
 
 ### Token assets
 

@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import express from "express";
+import { Contract, JsonRpcProvider, Wallet } from "ethers";
 import { makeStore, newId, settleMarket } from "./betting.js";
 import {
   loadBlackjackState,
@@ -83,6 +84,20 @@ const validations = new Map();
 const WALLET_BET_LIMIT = 1000;
 const GAME_WALLET_ADDRESS =
   process.env.GAME_WALLET_ADDRESS || "0x1111111111111111111111111111111111111111";
+const GAME_WALLET_PRIVATE_KEY = process.env.GAME_WALLET_PRIVATE_KEY || "";
+const RONIN_RPC = process.env.RONIN_RPC || "https://api.roninchain.com/rpc";
+const KATANA_ROUTER_ADDRESS = process.env.KATANA_ROUTER_ADDRESS || "";
+const WRON_ADDRESS = process.env.WRON_ADDRESS || "";
+const DYNW_TOKEN_ADDRESS = "0x17ff4EA5dD318E5FAf7f5554667d65abEC96Ff57";
+const ERC20_ABI = [
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+];
+const ROUTER_ABI = [
+  "function swapExactETHForTokens(uint amountOutMin, address[] path, address to, uint deadline) payable returns (uint[] amounts)",
+  "function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline) returns (uint[] amounts)",
+];
+const roninProvider = new JsonRpcProvider(RONIN_RPC);
 
 const MASTERPIECE_QUERY = `
   query Masterpiece($id: ID) {
@@ -280,6 +295,66 @@ app.get("/api/game-wallet", (_req, res) => {
     address: GAME_WALLET_ADDRESS,
     note: "TODO: replace with per-user game wallet assignment.",
   });
+});
+
+app.post("/api/game-wallet/swap", async (req, res) => {
+  try {
+    const { direction, amountIn, minOut, recipient, deadline } = req.body || {};
+    if (!direction || !amountIn || !minOut) {
+      return res.status(400).json({ error: "direction, amountIn, and minOut are required" });
+    }
+    if (!KATANA_ROUTER_ADDRESS || !WRON_ADDRESS) {
+      return res.status(400).json({ error: "Missing KATANA_ROUTER_ADDRESS or WRON_ADDRESS configuration" });
+    }
+    if (!GAME_WALLET_PRIVATE_KEY) {
+      return res.status(400).json({ error: "GAME_WALLET_PRIVATE_KEY is not configured" });
+    }
+
+    const amountInValue = BigInt(amountIn);
+    const minOutValue = BigInt(minOut);
+    if (amountInValue <= 0n || minOutValue < 0n) {
+      return res.status(400).json({ error: "Invalid swap amounts" });
+    }
+
+    const wallet = new Wallet(GAME_WALLET_PRIVATE_KEY, roninProvider);
+    const router = new Contract(KATANA_ROUTER_ADDRESS, ROUTER_ABI, wallet);
+    const swapDeadline = Number(deadline) || Math.floor(Date.now() / 1000) + 10 * 60;
+    const toAddress = typeof recipient === "string" && recipient ? recipient : wallet.address;
+
+    if (direction === "DYNW_TO_RON") {
+      const token = new Contract(DYNW_TOKEN_ADDRESS, ERC20_ABI, wallet);
+      const allowance = await token.allowance(wallet.address, KATANA_ROUTER_ADDRESS);
+      if (allowance < amountInValue) {
+        const approveTx = await token.approve(KATANA_ROUTER_ADDRESS, amountInValue);
+        await approveTx.wait();
+      }
+      const tx = await router.swapExactTokensForETH(
+        amountInValue,
+        minOutValue,
+        [DYNW_TOKEN_ADDRESS, WRON_ADDRESS],
+        toAddress,
+        swapDeadline
+      );
+      const receipt = await tx.wait();
+      return res.json({ ok: true, txHash: tx.hash, status: receipt?.status ?? null });
+    }
+
+    if (direction === "RON_TO_DYNW") {
+      const tx = await router.swapExactETHForTokens(
+        minOutValue,
+        [WRON_ADDRESS, DYNW_TOKEN_ADDRESS],
+        toAddress,
+        swapDeadline,
+        { value: amountInValue }
+      );
+      const receipt = await tx.wait();
+      return res.json({ ok: true, txHash: tx.hash, status: receipt?.status ?? null });
+    }
+
+    return res.status(400).json({ error: "Unsupported swap direction" });
+  } catch (e) {
+    return res.status(500).json({ error: String(e) });
+  }
 });
 
 app.get("/api/blackjack/state", (_req, res) => {
