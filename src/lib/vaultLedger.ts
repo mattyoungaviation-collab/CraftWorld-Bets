@@ -15,6 +15,10 @@ export function buildBetId(masterpieceId: number, position: number) {
   return id(`cw-bet:${masterpieceId}:${position}`);
 }
 
+export function buildBlackjackBetId(roundId: number, seatId: number, walletAddress: string) {
+  return id(`cw-blackjack:${roundId}:${seatId}:${walletAddress.toLowerCase()}`);
+}
+
 export async function getVaultContract(provider: any) {
   if (!provider || !VAULT_LEDGER_ADDRESS) return null;
   const browserProvider = new BrowserProvider(provider);
