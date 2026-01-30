@@ -192,13 +192,37 @@ async function buildOddsHistory(endId) {
 
 function normalizeWallet(address) {
   if (!address || typeof address !== "string") return null;
-  return address.trim().toLowerCase();
+  const trimmed = address.trim().toLowerCase();
+  if (trimmed.startsWith("ronin:")) {
+    return `0x${trimmed.slice(6)}`;
+  }
+  return trimmed;
 }
 
 function ensureWalletRecord(address) {
   const normalized = normalizeWallet(address);
   if (!normalized) return null;
-  const existing = store.wallets[normalized];
+  let existing = store.wallets[normalized];
+  const legacyRoninKey = normalized.startsWith("0x") ? `ronin:${normalized.slice(2)}` : null;
+  const legacy = legacyRoninKey ? store.wallets[legacyRoninKey] : null;
+  if (!existing && legacy) {
+    store.wallets[normalized] = {
+      ...legacy,
+      address: normalized,
+      balance: Number(legacy.balance || 0),
+      ledger: Array.isArray(legacy.ledger) ? legacy.ledger : [],
+      betIds: Array.isArray(legacy.betIds) ? legacy.betIds : [],
+      lastSeenAt: new Date().toISOString(),
+    };
+    delete store.wallets[legacyRoninKey];
+    existing = store.wallets[normalized];
+  } else if (existing && legacy) {
+    existing.balance = Number(existing.balance || 0) + Number(legacy.balance || 0);
+    existing.ledger = [...(Array.isArray(existing.ledger) ? existing.ledger : []), ...(legacy.ledger || [])];
+    existing.betIds = [...(Array.isArray(existing.betIds) ? existing.betIds : []), ...(legacy.betIds || [])];
+    existing.lastSeenAt = new Date().toISOString();
+    delete store.wallets[legacyRoninKey];
+  }
   if (existing) {
     existing.lastSeenAt = new Date().toISOString();
     existing.balance = Number(existing.balance || 0);
