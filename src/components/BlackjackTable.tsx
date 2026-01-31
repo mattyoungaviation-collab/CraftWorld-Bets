@@ -413,7 +413,7 @@ export default function BlackjackTable({
             </div>
           )}
 
-          {session && hand?.outcome !== "PENDING" && (
+          {session && hand && hand.outcome !== "PENDING" && (
             <div className="control-group">
               <div className="label">Last payout</div>
               <div className="title">
