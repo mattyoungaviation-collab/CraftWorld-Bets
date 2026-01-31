@@ -193,10 +193,15 @@ Set the server environment variables for settlement and betting:
 
 ### Blackjack session API (smoke)
 
-Use a signed-in JWT (`$TOKEN`) and a wallet address (`$WALLET`) to exercise the blackjack flow:
+Use a signed-in JWT (`$TOKEN`) and a wallet address (`$WALLET`) to exercise the blackjack session flow. Gameplay is
+server-authoritative and off-chain; only the buy-in and leave actions touch the VaultLedger contract.
 
 ```bash
-# Buy in (server will return a betId; lock the buy-in on-chain with placeBet)
+# Check your current open session (or null)
+curl -s http://localhost:3000/api/blackjack/session \\
+  -H "authorization: Bearer $TOKEN"
+
+# Buy in (server returns a betId; lock the buy-in on-chain with placeBet)
 curl -s -X POST http://localhost:3000/api/blackjack/buyin \\
   -H "content-type: application/json" \\
   -H "authorization: Bearer $TOKEN" \\
@@ -206,9 +211,9 @@ curl -s -X POST http://localhost:3000/api/blackjack/buyin \\
 curl -s -X POST http://localhost:3000/api/blackjack/deal \\
   -H "content-type: application/json" \\
   -H "authorization: Bearer $TOKEN" \\
-  -d '{"amountWei":"25000000000000000000"}'
+  -d '{"betAmountWei":"25000000000000000000"}'
 
-# Perform an action (hit/stand/double/split)
+# Perform an action (hit/stand/double/split/surrender)
 curl -s -X POST http://localhost:3000/api/blackjack/action \\
   -H "content-type: application/json" \\
   -H "authorization: Bearer $TOKEN" \\

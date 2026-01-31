@@ -15,10 +15,6 @@ export function buildBetId(masterpieceId: number, position: number) {
   return id(`cw-bet:${masterpieceId}:${position}`);
 }
 
-export function buildBlackjackBetId(roundId: number, seatId: number, walletAddress: string) {
-  return id(`cw-blackjack:${roundId}:${seatId}:${walletAddress.toLowerCase()}`);
-}
-
 export function buildBlackjackSessionBetId(sessionId: string) {
   return id(`cw-bj:${sessionId}`);
 }
