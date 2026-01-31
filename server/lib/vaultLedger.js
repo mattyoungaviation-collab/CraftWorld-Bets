@@ -9,7 +9,6 @@ const VAULT_LEDGER_READ_ABI = [
   "function lockedBalances(address owner, address token) view returns (uint256)",
 
   "function betStakes(bytes32 betId, address owner) view returns (uint256)",
-  "function treasury() view returns (address)",
 ];
 
 export function getVaultReadContract(address, provider) {
