@@ -426,6 +426,35 @@ function resolveHand(state, betAmountWei) {
   if (dealerBlackjack && !playerBlackjack) {
     return { outcome: "DEALER_WIN", payoutWei: -betWei, state: { ...state, phase: "complete" } };
   }
+  tableState.dealer = dealer;
+  tableState.phase = "complete";
+  const dealerTotals = getHandTotals(dealer);
+  const results = tableState.hands.map((hand) => {
+    if (hand.status === "surrendered") {
+      return { outcome: "SURRENDER", payoutDelta: -(BigInt(hand.betWei) / 2n) };
+    }
+    const totals = getHandTotals(hand.cards);
+    if (totals.total > 21) {
+      return { outcome: "BUST", payoutDelta: -BigInt(hand.betWei) };
+    }
+    if (hand.status === "blackjack" && !isBlackjack(dealer)) {
+      const payout = (BigInt(hand.betWei) * 3n) / 2n;
+      return { outcome: "BLACKJACK", payoutDelta: payout };
+    }
+    if (dealerTotals.total > 21) {
+      return { outcome: "PLAYER_WIN", payoutDelta: BigInt(hand.betWei) };
+    }
+    if (totals.total > dealerTotals.total) {
+      return { outcome: "PLAYER_WIN", payoutDelta: BigInt(hand.betWei) };
+    }
+    if (totals.total < dealerTotals.total) {
+      return { outcome: "DEALER_WIN", payoutDelta: -BigInt(hand.betWei) };
+    }
+    return { outcome: "PUSH", payoutDelta: 0n };
+  });
+  const payoutWei = results.reduce((sum, entry) => sum + entry.payoutDelta, 0n);
+  return { tableState, payoutWei, results };
+}
 
   if (playerBlackjack && !dealerBlackjack) {
     return { outcome: "BLACKJACK", payoutWei: (betWei * 3n) / 2n, state: { ...state, phase: "complete" } };
@@ -524,6 +553,24 @@ app.get("/api/blackjack/session", requireAuth, async (req, res) => {
       orderBy: { createdAt: "desc" },
     });
     res.json({ ok: true, session: serializeBlackjackSession(session), hand: serializeBlackjackHand(hand) });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get("/api/blackjack/balance", requireAuth, async (req, res) => {
+  try {
+    const walletAddress = normalizeWallet(req.user?.loginAddress);
+    if (!walletAddress) return res.status(403).json({ error: "walletAddress required" });
+    const { balance, locked } = await fetchVaultBalances(walletAddress);
+    const available = balance - locked;
+    res.json({
+      ok: true,
+      wallet: walletAddress,
+      balance: balance.toString(),
+      locked: locked.toString(),
+      available: available.toString(),
+    });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
@@ -791,6 +838,7 @@ app.post("/api/blackjack/action", requireAuth, async (req, res) => {
           stateJson: state,
           outcome,
           payoutWei: payoutWei.toString(),
+          betAmountWei: tableState.hands.reduce((sum, entry) => sum + BigInt(entry.betWei), 0n).toString(),
         },
       });
       let updatedSession = session;

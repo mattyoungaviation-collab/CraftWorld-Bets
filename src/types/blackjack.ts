@@ -1,11 +1,10 @@
 export type BlackjackPlayerState = "playing" | "stood" | "bust" | "blackjack" | "surrendered";
 
 export type BlackjackTableState = {
-  shoe: string[];
-  shoeIndex: number;
-  playerCards: string[];
-  dealerCards: string[];
-  playerState: BlackjackPlayerState;
+  dealer: Card[];
+  shoe: Card[];
+  hands: BlackjackHandState[];
+  activeHandIndex: number;
   phase: "player" | "dealer" | "complete";
 };
 

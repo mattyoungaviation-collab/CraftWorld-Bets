@@ -79,8 +79,10 @@ export default function BlackjackTable({
   const [selectedSeatId, setSelectedSeatId] = useState<number | null>(null);
   const [buyInAmount, setBuyInAmount] = useState("");
   const [betAmount, setBetAmount] = useState("");
-  const [vaultStatus, setVaultStatus] = useState("");
-  const [settlementStatus, setSettlementStatus] = useState("");
+  const [vaultBalanceWei, setVaultBalanceWei] = useState<bigint | null>(null);
+  const [statusMessage, setStatusMessage] = useState("");
+  const [settlementMessage, setSettlementMessage] = useState("");
+  const [settlementTxHash, setSettlementTxHash] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const { vaultBalance, vaultLocked, refresh: refreshVaultBalance } = useVaultLedgerBalance(wallet, walletProvider);
   const availableVaultWei =
@@ -142,13 +144,27 @@ export default function BlackjackTable({
     setHand(json.hand || null);
   }, [authFetch, isSignedIn]);
 
+  const refreshVaultBalance = useCallback(async () => {
+    if (!loginAddress || !isSignedIn) {
+      setVaultBalanceWei(null);
+      return;
+    }
+    const response = await authFetch("/api/blackjack/balance");
+    const json = await response.json();
+    if (!response.ok) {
+      throw new Error(json?.error || "Failed to load vault balance");
+    }
+    setVaultBalanceWei(BigInt(json.available ?? json.balance ?? "0"));
+  }, [authFetch, isSignedIn, loginAddress]);
+
   useEffect(() => {
     if (!active) return;
-    setVaultStatus("");
-    setSettlementStatus("");
-    refreshSession().catch((e) => setVaultStatus(e?.message || "Failed to load session"));
-    refreshVaultLedger();
-  }, [active, refreshSession, refreshVaultLedger]);
+    setStatusMessage("");
+    setSettlementMessage("");
+    setSettlementTxHash(null);
+    refreshSession().catch((e) => setStatusMessage(e?.message || "Failed to load session"));
+    refreshVaultBalance().catch((e) => setStatusMessage(e?.message || "Failed to load vault balance"));
+  }, [active, refreshSession, refreshVaultBalance]);
 
   useEffect(() => {
     if (session?.seatId !== undefined && session?.seatId !== null) {
@@ -190,32 +206,32 @@ export default function BlackjackTable({
         disabled={disabled}
       >
         <div className="seat-title">Seat {index + 1}</div>
-        <div className="seat-status">{isSessionSeat ? "Occupied" : isSelected ? "Selected" : "Open"}</div>
+        <div className="seat-status">{isSessionSeat ? "Your seat" : isSelected ? "Selected" : "Open"}</div>
       </button>
     );
   });
 
   const handleBuyIn = async () => {
     if (!wallet || !walletProvider) {
-      setVaultStatus("❌ Connect your wallet to buy in.");
+      setStatusMessage("❌ Connect your wallet to buy in.");
       return;
     }
     if (!isSignedIn) {
-      setVaultStatus("❌ Sign in before buying in.");
+      setStatusMessage("❌ Sign in before buying in.");
       return;
     }
     if (selectedSeatId === null) {
-      setVaultStatus("❌ Select a seat to buy in.");
+      setStatusMessage("❌ Select a seat to buy in.");
       return;
     }
     const amountWei = parseUnits(buyInAmount || "0", coinDecimals);
     if (amountWei <= 0n) {
-      setVaultStatus("❌ Enter a valid buy-in amount.");
+      setStatusMessage("❌ Enter a valid buy-in amount.");
       return;
     }
     try {
       setLoading(true);
-      setVaultStatus("⏳ Reserving your buy-in...");
+      setStatusMessage("⏳ Reserving your table buy-in...");
       const response = await authFetch("/api/blackjack/buyin", {
         method: "POST",
         body: JSON.stringify({ seatId: selectedSeatId, amountWei: amountWei.toString() }),
@@ -229,14 +245,14 @@ export default function BlackjackTable({
       if (!vault) {
         throw new Error("Vault Ledger not configured.");
       }
-      setVaultStatus("⏳ Confirm the buy-in transaction...");
+      setStatusMessage("⏳ Confirm the buy-in transaction...");
       const tx = await vault.contract.placeBet(lock.betId, vaultTokenAddress(), BigInt(lock.amountWei));
       await tx.wait();
-      setVaultStatus("✅ Buy-in locked. You're seated!");
+      setStatusMessage("✅ Buy-in locked. You're seated!");
       await refreshSession();
       refreshVaultLedger();
     } catch (e: any) {
-      setVaultStatus(`❌ ${e?.message || String(e)}`);
+      setStatusMessage(`❌ ${e?.message || String(e)}`);
     } finally {
       setLoading(false);
     }
@@ -244,17 +260,17 @@ export default function BlackjackTable({
 
   const handleDeal = async () => {
     if (!session) {
-      setVaultStatus("❌ Buy in before dealing.");
+      setStatusMessage("❌ Buy in before dealing.");
       return;
     }
     const amountWei = parseUnits(betAmount || "0", coinDecimals);
     if (amountWei <= 0n) {
-      setVaultStatus("❌ Enter a valid bet amount.");
+      setStatusMessage("❌ Enter a valid bet amount.");
       return;
     }
     try {
       setLoading(true);
-      setVaultStatus("⏳ Dealing a new hand...");
+      setStatusMessage("⏳ Dealing a new hand...");
       const response = await authFetch("/api/blackjack/deal", {
         method: "POST",
         body: JSON.stringify({ betAmountWei: amountWei.toString() }),
@@ -265,9 +281,9 @@ export default function BlackjackTable({
       }
       setSession(json.session || null);
       setHand(json.hand || null);
-      setVaultStatus("");
+      setStatusMessage("");
     } catch (e: any) {
-      setVaultStatus(`❌ ${e?.message || String(e)}`);
+      setStatusMessage(`❌ ${e?.message || String(e)}`);
     } finally {
       setLoading(false);
     }
@@ -276,7 +292,7 @@ export default function BlackjackTable({
   const handleAction = async (action: string) => {
     try {
       setLoading(true);
-      setVaultStatus(`⏳ ${ACTION_LABELS[action] || action}...`);
+      setStatusMessage(`⏳ ${ACTION_LABELS[action] || action}...`);
       const response = await authFetch("/api/blackjack/action", {
         method: "POST",
         body: JSON.stringify({ action }),
@@ -287,9 +303,9 @@ export default function BlackjackTable({
       }
       setSession(json.session || null);
       setHand(json.hand || null);
-      setVaultStatus("");
+      setStatusMessage("");
     } catch (e: any) {
-      setVaultStatus(`❌ ${e?.message || String(e)}`);
+      setStatusMessage(`❌ ${e?.message || String(e)}`);
     } finally {
       setLoading(false);
     }
@@ -299,32 +315,31 @@ export default function BlackjackTable({
     if (!session) return;
     try {
       setLoading(true);
-      setSettlementStatus("");
-      setVaultStatus("⏳ Settling your session...");
+      setSettlementMessage("");
+      setSettlementTxHash(null);
+      setStatusMessage("⏳ Settling your session...");
       const response = await authFetch("/api/blackjack/leave", { method: "POST" });
       const json = await response.json();
       if (!response.ok) {
         throw new Error(json?.error || "Leave failed");
       }
-      setSettlementStatus(
-        json?.settlement?.txHash
-          ? `✅ Settlement confirmed: ${json.settlement.txHash}`
-          : "✅ Session settled."
-      );
+      const txHash = json?.settlement?.txHash;
+      setSettlementTxHash(txHash || null);
+      setSettlementMessage(txHash ? "✅ Settlement confirmed." : "✅ Session closed.");
       setSession(null);
       setHand(null);
-      refreshVaultLedger();
-      setVaultStatus("");
+      await refreshVaultBalance();
+      setStatusMessage("");
     } catch (e: any) {
-      setVaultStatus(`❌ ${e?.message || String(e)}`);
+      setStatusMessage(`❌ ${e?.message || String(e)}`);
     } finally {
       setLoading(false);
     }
   };
 
-  const seatLabel = session ? `Seat ${session.seatId + 1}` : "Pick a seat";
-  const sessionStatus = session ? "Open" : "No session";
-  const handStatus = hand ? hand.outcome.replace(/_/g, " ") : "Waiting";
+  const dealerCards = hand?.stateJson?.dealer ?? [];
+  const dealerTotals = dealerCards.length ? getHandTotals(dealerCards) : null;
+  const showDealerHole = hand?.stateJson?.phase === "player";
 
   return (
     <section className="card blackjack-card">
@@ -332,7 +347,7 @@ export default function BlackjackTable({
         <div>
           <div className="section-title">Blackjack Table</div>
           <div className="subtle">
-            Session table · One lock tx to buy in · Off-chain gameplay · One settle tx to leave.
+            Session table · Buy in once · Play off-chain · Settle on leave.
           </div>
         </div>
         <div className="blackjack-header-actions">
@@ -344,13 +359,8 @@ export default function BlackjackTable({
         </div>
       </div>
 
-      <div className="blackjack-summary">
-        <div className="summary-card">
-          <div className="label">Session status</div>
-          <div className="title">{sessionStatus}</div>
-          <div className="subtle">Active table session.</div>
-        </div>
-        <div className="summary-card">
+      <div className="blackjack-status-grid">
+        <div className="status-card">
           <div className="label">Vault balance</div>
           <div className="title">
             {availableLedgerBalanceWei !== null
@@ -359,22 +369,19 @@ export default function BlackjackTable({
           </div>
           <div className="subtle">Available for blackjack buy-ins.</div>
         </div>
-        <div className="summary-card">
+        <div className="status-card">
           <div className="label">Session bankroll</div>
           <div className="title">
             {session ? `${formatTokenAmount(BigInt(session.bankrollWei), coinDecimals)} ${coinSymbol}` : "—"}
           </div>
           <div className="subtle">Updated after each hand settles.</div>
         </div>
-      </div>
-
-      <div className="blackjack-summary secondary">
-        <div className="summary-card">
+        <div className="status-card">
           <div className="label">Seat</div>
-          <div className="title">{seatLabel}</div>
-          <div className="subtle">Select a seat to buy in.</div>
+          <div className="title">{session ? `Seat ${session.seatId + 1}` : "Not seated"}</div>
+          <div className="subtle">Select a seat and buy in to join.</div>
         </div>
-        <div className="summary-card">
+        <div className="status-card">
           <div className="label">Hand status</div>
           <div className="title">{handStatus}</div>
           <div className="subtle">Dealer hits soft 17 · Blackjack pays 3:2.</div>
@@ -388,8 +395,21 @@ export default function BlackjackTable({
         </div>
       </div>
 
-      {vaultStatus && <div className="toast">{vaultStatus}</div>}
-      {settlementStatus && <div className="toast">{settlementStatus}</div>}
+      {statusMessage && <div className="toast">{statusMessage}</div>}
+      {settlementMessage && (
+        <div className="toast">
+          <div>{settlementMessage}</div>
+          {settlementTxHash && (
+            <a
+              href={`https://explorer.roninchain.com/tx/${settlementTxHash}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              View settlement transaction
+            </a>
+          )}
+        </div>
+      )}
 
       <div className="blackjack-layout">
         <div className="blackjack-table-panel">
@@ -399,7 +419,7 @@ export default function BlackjackTable({
               {!dealerCards.length ? (
                 <span>—</span>
               ) : showDealerHole ? (
-                <span>{dealerCards[0] ? `${dealerCards[0]}` : "—"} · ??</span>
+                <span>{dealerCards[0] ? `${dealerCards[0].rank}${dealerCards[0].suit}` : "—"} · ??</span>
               ) : (
                 <span>{formatCards(dealerCards)}</span>
               )}
@@ -534,11 +554,14 @@ export default function BlackjackTable({
 
           {session && (
             <div className="control-group">
-              <div className="label">Session info</div>
+              <div className="label">Session</div>
               <div className="subtle">
                 Buy-in: {formatTokenAmount(BigInt(session.buyInAmountWei), coinDecimals)} {coinSymbol}
               </div>
               <div className="subtle">Seat: {session.seatId + 1}</div>
+              <button className="btn btn-ghost" type="button" onClick={handleLeave} disabled={loading}>
+                Leave table
+              </button>
             </div>
           )}
         </div>
