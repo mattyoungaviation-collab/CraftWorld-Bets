@@ -112,6 +112,21 @@ export default function BlackjackTable({
       ? vaultBalanceWei - vaultLockedWei
       : vaultBalanceWei;
 
+  const ledgerWalletAddress = loginAddress || wallet;
+  const {
+    vaultBalance: ledgerBalanceWei,
+    vaultLocked: ledgerLockedWei,
+    refresh: refreshVaultLedger,
+  } = useVaultLedgerBalance(
+    ledgerWalletAddress,
+    walletProvider,
+  );
+
+  const availableLedgerBalanceWei =
+    ledgerBalanceWei !== null && ledgerLockedWei !== null && ledgerBalanceWei > ledgerLockedWei
+      ? ledgerBalanceWei - ledgerLockedWei
+      : ledgerBalanceWei;
+
   const refreshSession = useCallback(async () => {
     if (!isSignedIn) {
       setSession(null);
@@ -132,8 +147,8 @@ export default function BlackjackTable({
     setVaultStatus("");
     setSettlementStatus("");
     refreshSession().catch((e) => setVaultStatus(e?.message || "Failed to load session"));
-    refreshVaultBalance();
-  }, [active, refreshSession, refreshVaultBalance]);
+    refreshVaultLedger();
+  }, [active, refreshSession, refreshVaultLedger]);
 
   useEffect(() => {
     if (session?.seatId !== undefined && session?.seatId !== null) {
@@ -219,7 +234,7 @@ export default function BlackjackTable({
       await tx.wait();
       setVaultStatus("✅ Buy-in locked. You're seated!");
       await refreshSession();
-      refreshVaultBalance();
+      refreshVaultLedger();
     } catch (e: any) {
       setVaultStatus(`❌ ${e?.message || String(e)}`);
     } finally {
@@ -298,7 +313,7 @@ export default function BlackjackTable({
       );
       setSession(null);
       setHand(null);
-      refreshVaultBalance();
+      refreshVaultLedger();
       setVaultStatus("");
     } catch (e: any) {
       setVaultStatus(`❌ ${e?.message || String(e)}`);
@@ -338,8 +353,8 @@ export default function BlackjackTable({
         <div className="summary-card">
           <div className="label">Vault balance</div>
           <div className="title">
-            {availableVaultBalanceWei !== null
-              ? `${formatTokenAmount(availableVaultBalanceWei, coinDecimals)} ${coinSymbol}`
+            {availableLedgerBalanceWei !== null
+              ? `${formatTokenAmount(availableLedgerBalanceWei, coinDecimals)} ${coinSymbol}`
               : "—"}
           </div>
           <div className="subtle">Available for blackjack buy-ins.</div>
