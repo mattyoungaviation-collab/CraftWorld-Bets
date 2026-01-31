@@ -48,6 +48,13 @@ const OPERATOR_PRIVATE_KEY = process.env.OPERATOR_PRIVATE_KEY || "";
 const DYNW_DECIMALS = 18;
 const OUTCOME_WIN = 1;
 const OUTCOME_LOSE = 2;
+const ERC20_READ_ABI = [
+  "function name() view returns (string)",
+  "function symbol() view returns (string)",
+  "function decimals() view returns (uint8)",
+  "function balanceOf(address owner) view returns (uint256)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+];
 const VAULT_LEDGER_ABI = [
   "function placeBet(bytes32 betId, address token, uint256 amount)",
   "function settleBet(bytes32 betId, address token, uint256 totalAmount, uint8 outcome, address[] participants)",
