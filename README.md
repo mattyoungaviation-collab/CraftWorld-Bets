@@ -1,106 +1,51 @@
-# React + TypeScript + Vite
+# CraftWorld Bets
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+CraftWorld Bets includes the original leaderboard betting desk plus a new multiplayer **Crash** game that runs in realtime with a provably fair commit-reveal flow and on-chain settlement via the VaultLedger contract.
 
-Currently, two official plugins are available:
+## Crash game overview
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+Crash is a shared, global round:
 
-## React Compiler
+- All players in all browsers are in the same round.
+- Betting is open for ~6 seconds, then the multiplier starts at **0.50x** and rises smoothly until the round crashes.
+- Players may cash out any time before the crash to lock their payout.
+- Payout = `betAmount * cashoutMultiplier`; if the round crashes before cashout, payout = 0.
+- The round never exceeds **50x**.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+**Provably fair:**
 
-## Expanding the ESLint configuration
+1. The server commits to a random seed (`commitHash = keccak256(serverSeed)`) before betting closes.
+2. After the crash, the server reveals `serverSeed` and the derived hash to verify the crash point.
+3. Distribution embeds a 2% house edge:
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```
+P(crash >= x) = (1 - edge) / x,  edge = 2%
+crash = (1 - edge) / u
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Vault Ledger smart contract
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+`contracts/VaultLedger.sol` escrows DYNW on-chain and maintains a ledger of available + locked balances.
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+- `depositDYNW` / `withdrawDYNW`
+- `placeBet` locks funds for a `betId`
+- `settleBet` unlocks the stake and applies a net win/loss against the treasury
+- Only the **operator** can call `settleBet`
 
-## Server persistence
-
-The API stores bets on disk. Set `BETS_DATA_DIR` to a persistent volume path (for example, `/var/data` on Render) so redeploys keep existing bets. If unset, the server falls back to `server/data`.
-
-User sign-in metadata is stored in Postgres via Prisma. Configure `DATABASE_URL` and run migrations before starting the server.
-
-## Running locally
-
-Install dependencies, then start the dev server:
+### Deploying the Vault Ledger to Ronin
 
 ```bash
-npm install
-npm run dev
+RONIN_RPC=... \
+DEPLOYER_PRIVATE_KEY=0x... \
+DYNW_TOKEN_ADDRESS=0x... \
+TREASURY_ADDRESS=0x... \
+OPERATOR_ADDRESS=0x... \
+npm run deploy:vault-ledger
 ```
 
-Make sure you have a `.env` file (or environment variables) configured with the values below so the vault ledger flows can function.
+The script writes `vault-ledger-deployment.json` and `VaultLedger.metadata.json` for verification.
 
-### Database setup
-
-1. Create a Postgres database and set `DATABASE_URL`.
-2. Run migrations:
-
-```bash
-npx prisma migrate deploy
-```
-
-### Vault ledger smoke test
-
-With the contracts deployed and the server running, you can exercise a full deposit → bet → settle → withdraw flow:
+### Smoke test
 
 ```bash
 RONIN_RPC=... \
@@ -112,90 +57,68 @@ DYNW_MINTABLE=true \
 node scripts/vault-ledger-smoke.mjs
 ```
 
-## Vault Ledger smart contract
+## Environment variables
 
-The `contracts/VaultLedger.sol` contract escrows DYNW (and optional WRON) on-chain and maintains an internal ledger for
-each wallet. Users deposit and withdraw directly. Bets lock internal balances, and the operator can only settle by
-moving value between ledgers and the treasury/fee accounts.
+### Server (Render + local)
 
-### Deploying the Vault Ledger to Ronin
+- `JWT_SECRET`
+- `DATABASE_URL`
+- `RONIN_RPC`
+- `DYNW_TOKEN_ADDRESS`
+- `VAULT_LEDGER_ADDRESS`
+- `OPERATOR_PRIVATE_KEY`
+- `TREASURY_ADDRESS`
+- `BETS_DATA_DIR=/var/data`
+- `CRASH_MIN_BET=10`
+- `CRASH_MAX_BET=2500`
+- `CRASH_HOUSE_EDGE_BPS=200`
+- `CRASH_BETTING_MS=6000`
+- `CRASH_COOLDOWN_MS=4000`
 
-Provide the deployment secrets via your deployment system (do not commit them), then run:
+### Frontend (Vite)
+
+- `VITE_WALLETCONNECT_PROJECT_ID`
+- `VITE_VAULT_LEDGER_ADDRESS`
+- `VITE_WRON_ADDRESS` (optional)
+- `VITE_KATANA_FACTORY_ADDRESS` (optional)
+- `VITE_KATANA_PAIR_ADDRESS` (optional)
+
+## Local development
 
 ```bash
-RONIN_RPC=... \
-DEPLOYER_PRIVATE_KEY=0x... \
-DYNW_TOKEN_ADDRESS=0x... \
-WRON_ADDRESS=0x... \
-TREASURY_ADDRESS=0x... \
-FEE_RECIPIENT=0x... \
-FEE_BPS=500 \
-OPERATOR_ADDRESS=0x... \
-npm run deploy:vault-ledger
+npm install
+npm run dev:all
 ```
 
-The deployment script compiles `contracts/VaultLedger.sol`, deploys it to Ronin, and writes a
-`vault-ledger-deployment.json` file containing the deployed address and configuration. It also writes
-`VaultLedger.metadata.json`, which contains the Solidity compiler metadata required by some verification flows.
+This runs:
+- Vite on `http://localhost:5173`
+- Express + Socket.IO on `http://localhost:3000`
 
-### Verifying the Vault Ledger on Ronin
+> Vite proxies `/api` and `/socket.io` to the backend.
 
-To make the contract readable on the Ronin explorer, verify it after deployment:
+### Database setup
 
-1. Open `vault-ledger-deployment.json` and copy the deployed `address`.
-2. Use the Ronin explorer's **Verify & Publish** flow with:
-   - **Compiler version:** from `vault-ledger-deployment.json` (`compilerVersion`).
-   - **Optimizer:** enabled, runs `200`.
-   - **Constructor args:** `dynwToken`, `wronToken`, `treasury`, `feeRecipient`, `feeBps`, `operator` (in that order).
-3. Upload the Solidity source from `contracts/VaultLedger.sol`.
-4. If the explorer asks for metadata, upload `VaultLedger.metadata.json`.
+```bash
+npx prisma migrate deploy
+```
 
-Once verified, the explorer will show the full source and ABI for anyone to read.
+## Render deployment
 
-## DYNW Integration
+1. Create a **Web Service** on Render.
+2. Add a **Disk** mounted at `/var/data` and set `BETS_DATA_DIR=/var/data`.
+3. Add a Render Postgres instance and set `DATABASE_URL`.
+4. Ensure Node 20 (already specified in `package.json`).
+5. Commands:
+   - **Build Command:** `npm install && npm run build && npx prisma migrate deploy`
+   - **Start Command:** `npm start`
+6. Ensure websockets are enabled (Socket.IO uses the same service).
 
-The DynoWager (DYNW) integration pulls balances, prices, and vault ledger state from Ronin Mainnet.
+## Treasury bankroll checklist
 
-### Frontend configuration (Vite)
+The treasury ledger account must pre-fund the VaultLedger to cover Crash cashouts:
 
-Set the following environment variables in your frontend `.env` file:
-
-- `VITE_WALLETCONNECT_PROJECT_ID` – WalletConnect project ID (required for wallet connection).
-- `VITE_VAULT_LEDGER_ADDRESS` – Deployed VaultLedger contract address.
-- `VITE_WRON_ADDRESS` – Wrapped RON (WRON) token address (optional, only used for price discovery).
-- `VITE_KATANA_FACTORY_ADDRESS` – Katana factory address (optional if you set the pair address).
-- `VITE_KATANA_PAIR_ADDRESS` – Known DYNW/WRON pair address (optional if factory is set).
-
-If the factory address is unavailable, set `VITE_KATANA_PAIR_ADDRESS` directly so the app can load pool reserves and price.
-
-### Server configuration
-
-Set the server environment variables for settlement and betting:
-
-- `JWT_SECRET` – JWT signing secret for auth tokens (required).
-- `DATABASE_URL` – Postgres connection string (required).
-- `BET_MAX_AMOUNT` – Optional max bet size (token units).
-- `RONIN_RPC` – Ronin RPC URL (defaults to `https://api.roninchain.com/rpc`).
-- `OPERATOR_PRIVATE_KEY` – Private key for the operator that calls `settleBet` (required for settlement).
-- `VAULT_LEDGER_ADDRESS` – Deployed VaultLedger contract address (required for settlement).
-- `DYNW_TOKEN_ADDRESS` – DYNW token address (defaults to `0x17ff4EA5dD318E5FAf7f5554667d65abEC96Ff57`).
-- `WRON_ADDRESS` – WRON token address (optional, if WRON support is enabled).
-- `TREASURY_ADDRESS` – Treasury address used at contract deployment.
-- `FEE_RECIPIENT` – Fee recipient address used at contract deployment.
-- `FEE_BPS` – Fee in basis points used at contract deployment.
-
-### Token assets
-
-This repo includes lightweight SVG placeholders (`public/dynowager-300.svg` and `public/dynowager-banner-1280x230.svg`)
-to avoid committing binary assets. Replace them with the official PNG/JPG files during deployment if needed and update
-the references in `src/pages/Token.tsx`.
-
-## Render deployment notes
-
-1. Provision a Postgres database and set `DATABASE_URL` in Render.
-   - Use the **Internal Database URL** from Render so the app can reach the database from the same private network.
-2. Add a persistent disk and set `BETS_DATA_DIR` (e.g., `/var/data`).
-3. Set the required environment variables from the server configuration section above.
-4. Configure Render commands:
-   - **Build Command:** `npm install && npm run prisma:generate && npm run build`
-   - **Start Command:** `npm run migrate:deploy && npm start`
+- [ ] Treasury wallet holds DYNW.
+- [ ] Treasury approves the VaultLedger to transfer DYNW.
+- [ ] Treasury deposits DYNW into the VaultLedger.
+- [ ] Operator wallet is funded for gas.
+- [ ] Run the smoke test to validate a full deposit → bet → settle → withdraw flow.

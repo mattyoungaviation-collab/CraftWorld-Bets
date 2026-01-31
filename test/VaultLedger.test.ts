@@ -3,7 +3,7 @@ import { ethers } from "hardhat";
 
 describe("VaultLedger", () => {
   async function deployFixture() {
-    const [deployer, operator, treasury, feeRecipient, user, other] = await ethers.getSigners();
+    const [deployer, operator, treasury, user, other] = await ethers.getSigners();
 
     const MockERC20 = await ethers.getContractFactory("MockERC20");
     const dynw = await MockERC20.deploy("DynoWager", "DYNW");
@@ -12,18 +12,17 @@ describe("VaultLedger", () => {
     const VaultLedger = await ethers.getContractFactory("VaultLedger");
     const vault = await VaultLedger.deploy(
       await dynw.getAddress(),
-      ethers.ZeroAddress,
       treasury.address,
-      feeRecipient.address,
-      500,
-      operator.address,
+      operator.address
     );
     await vault.waitForDeployment();
 
     await dynw.mint(user.address, ethers.parseEther("100"));
     await dynw.connect(user).approve(await vault.getAddress(), ethers.parseEther("100"));
+    await dynw.mint(treasury.address, ethers.parseEther("100"));
+    await dynw.connect(treasury).approve(await vault.getAddress(), ethers.parseEther("100"));
 
-    return { deployer, operator, treasury, feeRecipient, user, other, dynw, vault };
+    return { deployer, operator, treasury, user, other, dynw, vault };
   }
 
   it("allows deposit and withdraw", async () => {
@@ -50,7 +49,9 @@ describe("VaultLedger", () => {
     await vault.connect(user).depositDYNW(amount);
     await vault.connect(user).placeBet(betId, await dynw.getAddress(), amount);
 
-    await expect(vault.connect(other).settleBet(betId, [user.address], [amount]))
+    await expect(
+      vault.connect(other).settleBet(betId, await dynw.getAddress(), amount, 1, [user.address]),
+    )
       .to.be.revertedWithCustomError(vault, "AccessControlUnauthorizedAccount");
   });
 
@@ -63,32 +64,50 @@ describe("VaultLedger", () => {
     );
   });
 
-  it("settles bets and accrues treasury and fees", async () => {
-    const { operator, treasury, feeRecipient, user, other, dynw, vault } = await deployFixture();
+  it("settles a winning cashout using treasury funds", async () => {
+    const { operator, treasury, user, dynw, vault } = await deployFixture();
     const betId = ethers.id("bet-2");
     const stake = ethers.parseEther("4");
-    const stakeOther = ethers.parseEther("6");
+    const profit = ethers.parseEther("2");
 
     await vault.connect(user).depositDYNW(stake);
-    await vault.connect(other).depositDYNW(stakeOther);
+    await vault.connect(treasury).depositDYNW(ethers.parseEther("10"));
     await vault.connect(user).placeBet(betId, await dynw.getAddress(), stake);
-    await vault.connect(other).placeBet(betId, await dynw.getAddress(), stakeOther);
 
-    const payoutUser = ethers.parseEther("3");
-    const payoutOther = ethers.parseEther("0");
-
-    await expect(vault.connect(operator).settleBet(betId, [user.address, other.address], [payoutUser, payoutOther]))
+    await expect(
+      vault.connect(operator).settleBet(betId, await dynw.getAddress(), profit, 1, [user.address]),
+    )
       .to.emit(vault, "BetSettled")
-      .withArgs(betId, [user.address], [payoutUser], ethers.parseEther("6.5"), ethers.parseEther("0.5"));
+      .withArgs(betId, user.address, await dynw.getAddress(), stake, profit, 1);
 
+    const userBalance = await vault.balances(user.address, await dynw.getAddress());
     const treasuryBalance = await vault.balances(treasury.address, await dynw.getAddress());
-    const feeBalance = await vault.balances(feeRecipient.address, await dynw.getAddress());
-    expect(treasuryBalance).to.equal(ethers.parseEther("6.5"));
-    expect(feeBalance).to.equal(ethers.parseEther("0.5"));
+    expect(userBalance).to.equal(ethers.parseEther("6"));
+    expect(treasuryBalance).to.equal(ethers.parseEther("8"));
+  });
+
+  it("settles a losing bet to the treasury", async () => {
+    const { operator, treasury, user, dynw, vault } = await deployFixture();
+    const betId = ethers.id("bet-3");
+    const stake = ethers.parseEther("5");
+
+    await vault.connect(user).depositDYNW(stake);
+    await vault.connect(user).placeBet(betId, await dynw.getAddress(), stake);
+
+    await expect(
+      vault.connect(operator).settleBet(betId, await dynw.getAddress(), stake, 2, [user.address]),
+    )
+      .to.emit(vault, "BetSettled")
+      .withArgs(betId, user.address, await dynw.getAddress(), stake, stake, 2);
+
+    const userBalance = await vault.balances(user.address, await dynw.getAddress());
+    const treasuryBalance = await vault.balances(treasury.address, await dynw.getAddress());
+    expect(userBalance).to.equal(0);
+    expect(treasuryBalance).to.equal(stake);
   });
 
   it("blocks reentrancy on withdraw", async () => {
-    const [deployer, operator, treasury, feeRecipient, attacker] = await ethers.getSigners();
+    const [deployer, operator, treasury, attacker] = await ethers.getSigners();
     const ReentrantToken = await ethers.getContractFactory("ReentrantToken");
     const token = await ReentrantToken.deploy();
     await token.waitForDeployment();
@@ -96,11 +115,8 @@ describe("VaultLedger", () => {
     const VaultLedger = await ethers.getContractFactory("VaultLedger");
     const vault = await VaultLedger.deploy(
       await token.getAddress(),
-      ethers.ZeroAddress,
       treasury.address,
-      feeRecipient.address,
-      0,
-      operator.address,
+      operator.address
     );
     await vault.waitForDeployment();
 

@@ -15,6 +15,12 @@ const config: HardhatUserConfig = {
     sources: "./contracts",
     tests: "./test",
   },
+  networks: {
+    ronin: {
+      url: process.env.RONIN_RPC || "",
+      accounts: process.env.DEPLOYER_PRIVATE_KEY ? [process.env.DEPLOYER_PRIVATE_KEY] : [],
+    },
+  },
 };
 
 export default config;

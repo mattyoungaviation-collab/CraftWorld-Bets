@@ -4,7 +4,7 @@ const VAULT_ABI = [
   "function depositDYNW(uint256 amount)",
   "function withdrawDYNW(uint256 amount)",
   "function placeBet(bytes32 betId, address token, uint256 amount)",
-  "function settleBet(bytes32 betId, address[] participants, uint256[] payouts)",
+  "function settleBet(bytes32 betId, address token, uint256 netAmount, uint8 outcome, address[] participants)",
   "function balances(address owner, address token) view returns (uint256)",
   "function lockedBalances(address owner, address token) view returns (uint256)",
 ];
@@ -55,7 +55,7 @@ async function main() {
   const placeTx = await userVault.placeBet(betId, dynwTokenAddress, wagerAmount);
   await placeTx.wait();
 
-  const settleTx = await vault.settleBet(betId, [user.address], [parseUnits("7", 18)]);
+  const settleTx = await vault.settleBet(betId, dynwTokenAddress, parseUnits("2", 18), 1, [user.address]);
   await settleTx.wait();
 
   const withdrawTx = await userVault.withdrawDYNW(parseUnits("2", 18));
