@@ -400,18 +400,26 @@ function requireLoginWallet(req, walletAddress) {
   return { ok: true, walletAddress: normalized };
 }
 
-function parseAmountWei(value) {
-  if (value && typeof value === "object") {
-    if (value.$type === "BigInt") {
-      value = value.value;
+function coerceSerializedValue(value) {
+  let current = value;
+  let depth = 0;
+  while (current && typeof current === "object" && depth < 5) {
+    if (current.$type === "BigInt" && typeof current.value !== "undefined") {
+      current = current.value;
+    } else if (typeof current.value !== "undefined") {
+      current = current.value;
+    } else if (typeof current.toString === "function" && current.toString !== Object.prototype.toString) {
+      current = current.toString();
+    } else {
+      break;
     }
-    if (typeof value?.value !== "undefined" && (typeof value !== "string" && typeof value !== "bigint")) {
-      value = value.value;
-    }
-    if (value && typeof value.toString === "function" && typeof value !== "string" && typeof value !== "bigint") {
-      value = value.toString();
-    }
+    depth += 1;
   }
+  return current;
+}
+
+function parseAmountWei(value) {
+  value = coerceSerializedValue(value);
   if (typeof value === "bigint") {
     if (value <= 0n) return { error: "amountWei must be positive" };
     return { ok: true, amountWei: value };
