@@ -1,17 +1,4 @@
-export type Card = {
-  rank: string;
-  suit: string;
-  value: number;
-};
-
-export type BlackjackHandStatus = "playing" | "stood" | "bust" | "blackjack" | "surrendered";
-
-export type BlackjackHandState = {
-  cards: Card[];
-  status: BlackjackHandStatus;
-  betWei: string;
-  isSplit?: boolean;
-};
+export type BlackjackPlayerState = "playing" | "stood" | "bust" | "blackjack" | "surrendered";
 
 export type BlackjackTableState = {
   dealer: Card[];

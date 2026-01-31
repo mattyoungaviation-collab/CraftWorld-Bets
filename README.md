@@ -118,12 +118,35 @@ The `contracts/VaultLedger.sol` contract escrows DYNW (and optional WRON) on-cha
 each wallet. Users deposit and withdraw directly. Bets lock internal balances, and the operator can only settle by
 moving value between ledgers and the treasury/fee accounts.
 
+### Blackjack session flow
+
+Blackjack now runs as a session table with a single on-chain lock at buy-in and a single on-chain settlement when the
+player leaves. Gameplay actions are server-authoritative and authenticated via JWT (no per-action wallet signatures).
+
+**Session lifecycle**
+
+1. **Buy-in:** Client calls `POST /api/blackjack/buyin` with `{ seatId, amountWei }`, receives `{ betId }`, and sends
+   a single `placeBet` transaction to lock funds in the Vault Ledger.
+2. **Play:** Client uses JWT-authenticated calls to `POST /api/blackjack/deal` and `POST /api/blackjack/action` for
+   off-chain gameplay. Each hand settles instantly and updates the session bankroll server-side.
+3. **Leave:** Client calls `POST /api/blackjack/leave` once to settle the session. The operator moves net winnings or
+   losses between the player and treasury in a single Vault Ledger settlement.
+
+**Blackjack API**
+
+- `POST /api/blackjack/buyin` → `{ seatId, amountWei }`
+- `GET /api/blackjack/session` → returns the current open session (if any) and latest hand
+- `POST /api/blackjack/deal` → `{ betAmountWei }`
+- `POST /api/blackjack/action` → `{ action: "hit" | "stand" | "double" | "split" | "surrender" }`
+- `POST /api/blackjack/leave` → closes the session and settles net results on-chain
+
 ### House game treasury funding (Blackjack)
 
-Blackjack is a house game. Players still lock their buy-in on the VaultLedger, but net winnings are paid from the
-treasury's internal balance. Make sure the treasury address is pre-funded before enabling Blackjack settlements, or
-winners will be blocked from leaving the table. The operator never transfers tokens directly for payouts—it only calls
-`settleBet` to move internal balances between the player and treasury.
+Blackjack is a house game. Players lock a single buy-in on the VaultLedger, play hands off-chain with that bankroll,
+and settle once when leaving the table. Net winnings are paid from the treasury's internal balance. Make sure the
+treasury address is pre-funded before enabling Blackjack settlements, or winners will be blocked from leaving the
+table. The operator never transfers tokens directly for payouts—it only calls `settleBet` to move internal balances
+between the player and treasury.
 
 **Authorization model:** Option A (operator-settlement). Users call `placeBet` directly from their wallet. The
 `OPERATOR_ROLE` can call `settleBet`, but it can only move balances between internal ledgers and the treasury/fee

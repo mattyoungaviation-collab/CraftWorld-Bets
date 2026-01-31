@@ -423,7 +423,7 @@ select {
 .blackjack-card {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 18px;
 }
 
 .blackjack-header {
@@ -440,7 +440,12 @@ select {
   gap: 16px;
   background: #f8fafc;
   border-radius: 12px;
-  padding: 12px 16px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .status-card {
@@ -457,7 +462,7 @@ select {
 .blackjack-layout {
   display: grid;
   gap: 16px;
-  grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr);
+  grid-template-columns: minmax(0, 2.2fr) minmax(220px, 1fr);
   align-items: start;
 }
 
@@ -478,6 +483,9 @@ select {
   padding: 12px;
   max-height: 380px;
   overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .blackjack-seats-grid {

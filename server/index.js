@@ -11,7 +11,6 @@ import {
   buildBlackjackSessionBetId,
   getVaultReadContract,
   safeGetAvailableBalance,
-  safeGetLockedBalance,
 } from "./lib/vaultLedger.js";
 import { computeModelOdds } from "./odds.js";
 
@@ -58,7 +57,6 @@ const BLACKJACK_TABLE_MIN_BET_WEI = process.env.BLACKJACK_MIN_BET_WEI
 const BLACKJACK_DECKS = 6;
 const OUTCOME_WIN = 1;
 const OUTCOME_LOSE = 2;
-const OUTCOME_CANCEL = 3;
 const VAULT_LEDGER_ABI = [
   "function placeBet(bytes32 betId, address token, uint256 amount)",
   "function settleBet(bytes32 betId, address token, uint256 totalAmount, uint8 outcome, address[] participants)",
@@ -67,6 +65,7 @@ const VAULT_LEDGER_ABI = [
   "function betStakes(bytes32 betId, address owner) view returns (uint256)",
 ];
 const roninProvider = new JsonRpcProvider(RONIN_RPC);
+const dynwRead = DYNW_TOKEN_ADDRESS ? new Contract(DYNW_TOKEN_ADDRESS, ERC20_READ_ABI, roninProvider) : null;
 const operatorSigner =
   OPERATOR_PRIVATE_KEY && VAULT_LEDGER_ADDRESS ? new Wallet(OPERATOR_PRIVATE_KEY, roninProvider) : null;
 const vaultContract =
@@ -331,6 +330,17 @@ function serializeBlackjackHand(hand) {
   };
 }
 
+const BLACKJACK_SEAT_COUNT = 5;
+const BLACKJACK_SHOE_MIN_REMAINING = 20;
+
+function shuffleInPlace(cards) {
+  for (let i = cards.length - 1; i > 0; i -= 1) {
+    const j = crypto.randomInt(0, i + 1);
+    [cards[i], cards[j]] = [cards[j], cards[i]];
+  }
+  return cards;
+}
+
 function buildShoe(decks = BLACKJACK_DECKS) {
   const suits = ["♠", "♥", "♦", "♣"];
   const ranks = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"];
@@ -338,38 +348,37 @@ function buildShoe(decks = BLACKJACK_DECKS) {
   for (let d = 0; d < decks; d += 1) {
     for (const suit of suits) {
       for (const rank of ranks) {
-        let value = Number(rank);
-        if (Number.isNaN(value)) {
-          value = rank === "A" ? 11 : 10;
-        }
-        cards.push({ rank, suit, value });
+        cards.push(`${rank}${suit}`);
       }
     }
   }
-  return cards;
+  return shuffleInPlace(cards);
 }
 
-function drawRandomCard(shoe) {
-  const index = crypto.randomInt(0, shoe.length);
-  const [card] = shoe.splice(index, 1);
-  return card;
+function cardRank(card) {
+  return card.slice(0, -1);
+}
+
+function cardValue(rank) {
+  if (rank === "A") return 11;
+  if (["K", "Q", "J"].includes(rank)) return 10;
+  const value = Number(rank);
+  return Number.isNaN(value) ? 0 : value;
 }
 
 function getHandTotals(cards) {
   let total = 0;
   let aces = 0;
   for (const card of cards) {
-    total += card.value;
-    if (card.rank === "A") aces += 1;
+    const rank = cardRank(card);
+    total += cardValue(rank);
+    if (rank === "A") aces += 1;
   }
   while (total > 21 && aces > 0) {
     total -= 10;
     aces -= 1;
   }
-  const soft =
-    cards.some((card) => card.rank === "A") &&
-    total <= 21 &&
-    cards.reduce((sum, c) => sum + c.value, 0) !== total;
+  const soft = aces > 0;
   return { total, soft };
 }
 
@@ -384,31 +393,38 @@ function shouldDealerHit(cards) {
   return false;
 }
 
-function handStatusFromCards(cards) {
+function drawCard(state) {
+  if (state.shoeIndex >= state.shoe.length) {
+    throw new Error("Shoe is empty");
+  }
+  const card = state.shoe[state.shoeIndex];
+  state.shoeIndex += 1;
+  return card;
+}
+
+function getPlayerState(cards) {
   const totals = getHandTotals(cards);
   if (totals.total > 21) return "bust";
   if (isBlackjack(cards)) return "blackjack";
+  if (totals.total === 21) return "stood";
   return "playing";
 }
 
-function canSplitHand(handState, tableState) {
-  if (tableState.hands.length !== 1) return false;
-  if (handState.cards.length !== 2) return false;
-  return handState.cards[0].rank === handState.cards[1].rank;
-}
+function resolveHand(state, betAmountWei) {
+  const betWei = BigInt(betAmountWei);
+  const playerBlackjack = isBlackjack(state.playerCards);
+  const dealerBlackjack = isBlackjack(state.dealerCards);
 
-function canDoubleHand(handState) {
-  return handState.cards.length === 2 && handState.status === "playing";
-}
+  if (state.playerState === "surrendered") {
+    return { outcome: "SURRENDER", payoutWei: -(betWei / 2n), state: { ...state, phase: "complete" } };
+  }
 
-function canSurrenderHand(handState, tableState) {
-  return tableState.hands.length === 1 && handState.cards.length === 2 && handState.status === "playing";
-}
+  if (state.playerState === "bust") {
+    return { outcome: "BUST", payoutWei: -betWei, state: { ...state, phase: "complete" } };
+  }
 
-function settleHandState(tableState) {
-  const dealer = [...tableState.dealer];
-  while (shouldDealerHit(dealer) && tableState.shoe.length > 0) {
-    dealer.push(drawRandomCard(tableState.shoe));
+  if (dealerBlackjack && !playerBlackjack) {
+    return { outcome: "DEALER_WIN", payoutWei: -betWei, state: { ...state, phase: "complete" } };
   }
   tableState.dealer = dealer;
   tableState.phase = "complete";
@@ -440,18 +456,33 @@ function settleHandState(tableState) {
   return { tableState, payoutWei, results };
 }
 
-async function fetchVaultBalances(walletAddress) {
-  if (!vaultReadContract) {
-    throw new Error("VAULT_LEDGER_ADDRESS is not configured");
+  if (playerBlackjack && !dealerBlackjack) {
+    return { outcome: "BLACKJACK", payoutWei: (betWei * 3n) / 2n, state: { ...state, phase: "complete" } };
   }
 
-  const [availableWei, lockedWei] = await Promise.all([
-    safeGetAvailableBalance(vaultReadContract, DYNW_TOKEN_ADDRESS, walletAddress),
-    safeGetLockedBalance(vaultReadContract, DYNW_TOKEN_ADDRESS, walletAddress),
-  ]);
+  if (playerBlackjack && dealerBlackjack) {
+    return { outcome: "PUSH", payoutWei: 0n, state: { ...state, phase: "complete" } };
+  }
 
-  const balanceWei = availableWei + lockedWei;
-  return { balance: balanceWei, locked: lockedWei };
+  if (state.phase === "dealer") {
+    while (shouldDealerHit(state.dealerCards)) {
+      state.dealerCards.push(drawCard(state));
+    }
+  }
+
+  const playerTotals = getHandTotals(state.playerCards);
+  const dealerTotals = getHandTotals(state.dealerCards);
+
+  if (dealerTotals.total > 21) {
+    return { outcome: "PLAYER_WIN", payoutWei: betWei, state: { ...state, phase: "complete" } };
+  }
+  if (playerTotals.total > dealerTotals.total) {
+    return { outcome: "PLAYER_WIN", payoutWei: betWei, state: { ...state, phase: "complete" } };
+  }
+  if (playerTotals.total < dealerTotals.total) {
+    return { outcome: "DEALER_WIN", payoutWei: -betWei, state: { ...state, phase: "complete" } };
+  }
+  return { outcome: "PUSH", payoutWei: 0n, state: { ...state, phase: "complete" } };
 }
 
 async function fetchVaultBetStake(betId, walletAddress) {
@@ -518,7 +549,7 @@ app.get("/api/blackjack/session", requireAuth, async (req, res) => {
     });
     if (!session) return res.json({ ok: true, session: null, hand: null });
     const hand = await prisma.blackjackHand.findFirst({
-      where: { sessionId: session.id, outcome: "PENDING" },
+      where: { sessionId: session.id },
       orderBy: { createdAt: "desc" },
     });
     res.json({ ok: true, session: serializeBlackjackSession(session), hand: serializeBlackjackHand(hand) });
@@ -550,7 +581,7 @@ app.post("/api/blackjack/buyin", requireAuth, async (req, res) => {
     const amountCheck = parseWeiString(req.body?.amountWei);
     if (amountCheck.error) return res.status(400).json({ error: amountCheck.error });
     const seatId = Number(req.body?.seatId);
-    if (!Number.isInteger(seatId) || seatId < 0 || seatId > 4) {
+    if (!Number.isInteger(seatId) || seatId < 0 || seatId >= BLACKJACK_SEAT_COUNT) {
       return res.status(400).json({ error: "seatId must be between 0 and 4" });
     }
     const walletAddress = normalizeWallet(req.user?.loginAddress);
@@ -612,71 +643,64 @@ app.post("/api/blackjack/deal", requireAuth, async (req, res) => {
     }
     const walletAddress = normalizeWallet(req.user?.loginAddress);
     if (!walletAddress) return res.status(403).json({ error: "walletAddress required" });
-    const session = await prisma.blackjackSession.findFirst({
-      where: { walletAddress, status: "OPEN" },
-      orderBy: { createdAt: "desc" },
-    });
-    if (!session) return res.status(400).json({ error: "No active blackjack session" });
-    const bankrollWei = BigInt(session.bankrollWei);
-    if (amountCheck.amountWei > bankrollWei) {
-      return res.status(400).json({ error: "Wager exceeds table bankroll" });
-    }
-    const pendingHand = await prisma.blackjackHand.findFirst({
-      where: { sessionId: session.id, outcome: "PENDING" },
-      orderBy: { createdAt: "desc" },
-    });
-    if (pendingHand) {
-      return res.status(400).json({ error: "Finish the current hand before dealing" });
-    }
-    const lastHand = await prisma.blackjackHand.findFirst({
-      where: { sessionId: session.id },
-      orderBy: { createdAt: "desc" },
-    });
-    const previousShoe = Array.isArray(lastHand?.stateJson?.shoe) ? [...lastHand.stateJson.shoe] : [];
-    const shoe = previousShoe.length >= 52 ? previousShoe : buildShoe();
-    const playerCards = [drawRandomCard(shoe), drawRandomCard(shoe)];
-    const dealerCards = [drawRandomCard(shoe), drawRandomCard(shoe)];
-    const playerStatus = handStatusFromCards(playerCards);
-    const tableState = {
-      shoe,
-      dealer: dealerCards,
-      hands: [
-        {
-          cards: playerCards,
-          status: playerStatus,
-          betWei: amountCheck.amountWei.toString(),
-        },
-      ],
-      activeHandIndex: 0,
-      phase: playerStatus === "blackjack" || isBlackjack(dealerCards) ? "dealer" : "player",
-    };
-    let payoutWei = 0n;
-    let outcome = "PENDING";
-    if (tableState.phase !== "player") {
-      const resolved = settleHandState(tableState);
-      payoutWei = resolved.payoutWei;
-      const overall = resolved.results;
-      const allBust = overall.every((entry) => entry.outcome === "BUST");
-      if (overall.length === 1 && overall[0].outcome === "SURRENDER") {
-        outcome = "SURRENDER";
-      } else if (overall.length === 1 && overall[0].outcome === "BLACKJACK") {
-        outcome = "BLACKJACK";
-      } else if (allBust) {
-        outcome = "BUST";
-      } else if (payoutWei === 0n) {
-        outcome = "PUSH";
-      } else if (payoutWei > 0n) {
-        outcome = "PLAYER_WIN";
-      } else {
-        outcome = "DEALER_WIN";
-      }
-    }
     const result = await prisma.$transaction(async (tx) => {
+      const session = await tx.blackjackSession.findFirst({
+        where: { walletAddress, status: "OPEN" },
+        orderBy: { createdAt: "desc" },
+      });
+      if (!session) throw new Error("No active blackjack session");
+      const bankrollWei = BigInt(session.bankrollWei);
+      if (amountCheck.amountWei > bankrollWei) {
+        throw new Error("Wager exceeds table bankroll");
+      }
+      const pendingHand = await tx.blackjackHand.findFirst({
+        where: { sessionId: session.id, outcome: "PENDING" },
+        orderBy: { createdAt: "desc" },
+      });
+      if (pendingHand) {
+        throw new Error("Finish the current hand before dealing");
+      }
+      const lastHand = await tx.blackjackHand.findFirst({
+        where: { sessionId: session.id },
+        orderBy: { createdAt: "desc" },
+      });
+      const previousShoe = Array.isArray(lastHand?.stateJson?.shoe) ? [...lastHand.stateJson.shoe] : null;
+      const previousIndex = Number.isInteger(lastHand?.stateJson?.shoeIndex) ? lastHand.stateJson.shoeIndex : 0;
+      const needsShuffle =
+        !previousShoe ||
+        previousShoe.length - previousIndex < BLACKJACK_SHOE_MIN_REMAINING;
+      const state = {
+        shoe: needsShuffle ? buildShoe() : previousShoe,
+        shoeIndex: needsShuffle ? 0 : previousIndex,
+        playerCards: [],
+        dealerCards: [],
+        playerState: "playing",
+        phase: "player",
+      };
+      state.playerCards.push(drawCard(state));
+      state.dealerCards.push(drawCard(state));
+      state.playerCards.push(drawCard(state));
+      state.dealerCards.push(drawCard(state));
+      state.playerState = getPlayerState(state.playerCards);
+      if (state.playerState !== "playing" || isBlackjack(state.dealerCards)) {
+        state.phase = "dealer";
+      }
+      let outcome = "PENDING";
+      let payoutWei = 0n;
+      if (state.phase !== "player") {
+        const resolved = resolveHand(state, amountCheck.amountWei.toString());
+        outcome = resolved.outcome;
+        payoutWei = resolved.payoutWei;
+        state.phase = resolved.state.phase;
+        state.dealerCards = resolved.state.dealerCards;
+        state.playerCards = resolved.state.playerCards;
+        state.shoeIndex = resolved.state.shoeIndex;
+      }
       const hand = await tx.blackjackHand.create({
         data: {
           sessionId: session.id,
           betAmountWei: amountCheck.amountWei.toString(),
-          stateJson: tableState,
+          stateJson: state,
           outcome,
           payoutWei: payoutWei.toString(),
         },
@@ -688,11 +712,28 @@ app.post("/api/blackjack/deal", requireAuth, async (req, res) => {
           where: { id: session.id },
           data: { bankrollWei: updatedBankroll },
         });
-      }
-      return { hand, session: updatedSession };
-    });
+        let updatedSession = session;
+        if (outcome !== "PENDING") {
+          const updatedBankroll = (BigInt(session.bankrollWei) + payoutWei).toString();
+          updatedSession = await tx.blackjackSession.update({
+            where: { id: session.id },
+            data: { bankrollWei: updatedBankroll },
+          });
+        }
+        return { hand, session: updatedSession };
+      },
+      { isolationLevel: "Serializable" },
+    );
     res.json({ ok: true, session: serializeBlackjackSession(result.session), hand: serializeBlackjackHand(result.hand) });
   } catch (e) {
+    const message = String(e?.message || e);
+    if (
+      message.includes("Wager exceeds table bankroll") ||
+      message.includes("Finish the current hand") ||
+      message.includes("No active blackjack session")
+    ) {
+      return res.status(400).json({ error: message });
+    }
     res.status(500).json({ error: String(e) });
   }
 });
@@ -705,124 +746,96 @@ app.post("/api/blackjack/action", requireAuth, async (req, res) => {
     }
     const walletAddress = normalizeWallet(req.user?.loginAddress);
     if (!walletAddress) return res.status(403).json({ error: "walletAddress required" });
-    const session = await prisma.blackjackSession.findFirst({
-      where: { walletAddress, status: "OPEN" },
-      orderBy: { createdAt: "desc" },
-    });
-    if (!session) return res.status(400).json({ error: "No active blackjack session" });
-    const hand = await prisma.blackjackHand.findFirst({
-      where: { sessionId: session.id, outcome: "PENDING" },
-      orderBy: { createdAt: "desc" },
-    });
-    if (!hand || !hand.stateJson) {
-      return res.status(400).json({ error: "No active hand" });
-    }
-    const tableState = hand.stateJson;
-    if (!Array.isArray(tableState.hands) || tableState.hands.length === 0) {
-      return res.status(400).json({ error: "Hand state invalid" });
-    }
-    const bankrollWei = BigInt(session.bankrollWei);
-    const activeIndex = Number.isInteger(tableState.activeHandIndex) ? tableState.activeHandIndex : 0;
-    const activeHand = tableState.hands[activeIndex];
-    if (!activeHand || activeHand.status !== "playing") {
-      return res.status(400).json({ error: "No playable hand" });
-    }
-
-    if (action === "split") {
-      if (!canSplitHand(activeHand, tableState)) {
-        return res.status(400).json({ error: "Split not allowed" });
-      }
-      const baseBetWei = BigInt(activeHand.betWei);
-      const currentTotalWei = tableState.hands.reduce((sum, entry) => sum + BigInt(entry.betWei), 0n);
-      const nextTotalWei = currentTotalWei + baseBetWei;
-      if (nextTotalWei > bankrollWei) {
-        return res.status(400).json({ error: "Insufficient bankroll for split" });
-      }
-      const leftCard = activeHand.cards[0];
-      const rightCard = activeHand.cards[1];
-      const newHands = [
-        { cards: [leftCard], status: "playing", betWei: activeHand.betWei, isSplit: true },
-        { cards: [rightCard], status: "playing", betWei: activeHand.betWei, isSplit: true },
-      ];
-      tableState.hands = newHands;
-      tableState.activeHandIndex = 0;
-      for (const handState of tableState.hands) {
-        if (tableState.shoe.length === 0) break;
-        handState.cards.push(drawRandomCard(tableState.shoe));
-        handState.status = handStatusFromCards(handState.cards);
-      }
-    } else if (action === "double") {
-      if (!canDoubleHand(activeHand)) {
-        return res.status(400).json({ error: "Double not allowed" });
-      }
-      const currentTotalWei = tableState.hands.reduce((sum, entry) => sum + BigInt(entry.betWei), 0n);
-      const baseBetWei = BigInt(activeHand.betWei);
-      const nextTotalWei = currentTotalWei + baseBetWei;
-      if (nextTotalWei > bankrollWei) {
-        return res.status(400).json({ error: "Insufficient bankroll for double" });
-      }
-      const doubled = baseBetWei * 2n;
-      activeHand.betWei = doubled.toString();
-      if (tableState.shoe.length === 0) {
-        return res.status(400).json({ error: "Shoe is empty" });
-      }
-      activeHand.cards.push(drawRandomCard(tableState.shoe));
-      activeHand.status = handStatusFromCards(activeHand.cards);
-      if (activeHand.status === "playing") {
-        activeHand.status = "stood";
-      }
-    } else if (action === "surrender") {
-      if (!canSurrenderHand(activeHand, tableState)) {
-        return res.status(400).json({ error: "Surrender not allowed" });
-      }
-      activeHand.status = "surrendered";
-    } else if (action === "hit") {
-      if (tableState.shoe.length === 0) {
-        return res.status(400).json({ error: "Shoe is empty" });
-      }
-      activeHand.cards.push(drawRandomCard(tableState.shoe));
-      activeHand.status = handStatusFromCards(activeHand.cards);
-    } else if (action === "stand") {
-      activeHand.status = "stood";
-    }
-
-    let nextIndex = tableState.activeHandIndex;
-    while (nextIndex < tableState.hands.length && tableState.hands[nextIndex].status !== "playing") {
-      nextIndex += 1;
-    }
-    if (nextIndex >= tableState.hands.length) {
-      tableState.phase = "dealer";
-    } else {
-      tableState.activeHandIndex = nextIndex;
-    }
-
-    let payoutWei = 0n;
-    let outcome = "PENDING";
-    if (tableState.phase === "dealer") {
-      const resolved = settleHandState(tableState);
-      payoutWei = resolved.payoutWei;
-      const overall = resolved.results;
-      const allBust = overall.every((entry) => entry.outcome === "BUST");
-      if (overall.length === 1 && overall[0].outcome === "SURRENDER") {
-        outcome = "SURRENDER";
-      } else if (overall.length === 1 && overall[0].outcome === "BLACKJACK") {
-        outcome = "BLACKJACK";
-      } else if (allBust) {
-        outcome = "BUST";
-      } else if (payoutWei === 0n) {
-        outcome = "PUSH";
-      } else if (payoutWei > 0n) {
-        outcome = "PLAYER_WIN";
-      } else {
-        outcome = "DEALER_WIN";
-      }
-    }
-
     const result = await prisma.$transaction(async (tx) => {
+      const session = await tx.blackjackSession.findFirst({
+        where: { walletAddress, status: "OPEN" },
+        orderBy: { createdAt: "desc" },
+      });
+      if (!session) throw new Error("No active blackjack session");
+      const hand = await tx.blackjackHand.findFirst({
+        where: { sessionId: session.id, outcome: "PENDING" },
+        orderBy: { createdAt: "desc" },
+      });
+      if (!hand || !hand.stateJson) {
+        throw new Error("No active hand");
+      }
+      const state = {
+        shoe: Array.isArray(hand.stateJson.shoe) ? [...hand.stateJson.shoe] : [],
+        shoeIndex: Number.isInteger(hand.stateJson.shoeIndex) ? hand.stateJson.shoeIndex : 0,
+        playerCards: Array.isArray(hand.stateJson.playerCards) ? [...hand.stateJson.playerCards] : [],
+        dealerCards: Array.isArray(hand.stateJson.dealerCards) ? [...hand.stateJson.dealerCards] : [],
+        playerState: hand.stateJson.playerState || "playing",
+        phase: hand.stateJson.phase || "player",
+      };
+      if (state.phase !== "player") {
+        throw new Error("Hand already resolved");
+      }
+      if (state.playerState !== "playing") {
+        throw new Error("No playable hand");
+      }
+
+      let betAmountWei = BigInt(hand.betAmountWei);
+      const bankrollWei = BigInt(session.bankrollWei);
+
+      if (action === "split") {
+        throw new Error("Split not supported yet");
+      }
+
+      if (action === "double") {
+        if (state.playerCards.length !== 2) {
+          throw new Error("Double not allowed");
+        }
+        const doubled = betAmountWei * 2n;
+        if (doubled > bankrollWei) {
+          throw new Error("Insufficient bankroll for double");
+        }
+        betAmountWei = doubled;
+        state.playerCards.push(drawCard(state));
+        state.playerState = getPlayerState(state.playerCards);
+        if (state.playerState === "playing") {
+          state.playerState = "stood";
+        }
+        state.phase = "dealer";
+      }
+
+      if (action === "surrender") {
+        if (state.playerCards.length !== 2) {
+          throw new Error("Surrender not allowed");
+        }
+        state.playerState = "surrendered";
+        state.phase = "complete";
+      }
+
+      if (action === "hit") {
+        state.playerCards.push(drawCard(state));
+        state.playerState = getPlayerState(state.playerCards);
+        if (state.playerState !== "playing") {
+          state.phase = "dealer";
+        }
+      }
+
+      if (action === "stand") {
+        state.playerState = "stood";
+        state.phase = "dealer";
+      }
+
+      let payoutWei = 0n;
+      let outcome = "PENDING";
+      if (state.phase !== "player") {
+        const resolved = resolveHand(state, betAmountWei.toString());
+        outcome = resolved.outcome;
+        payoutWei = resolved.payoutWei;
+        state.phase = resolved.state.phase;
+        state.dealerCards = resolved.state.dealerCards;
+        state.playerCards = resolved.state.playerCards;
+        state.shoeIndex = resolved.state.shoeIndex;
+      }
+
       const updatedHand = await tx.blackjackHand.update({
         where: { id: hand.id },
         data: {
-          stateJson: tableState,
+          betAmountWei: betAmountWei.toString(),
+          stateJson: state,
           outcome,
           payoutWei: payoutWei.toString(),
           betAmountWei: tableState.hands.reduce((sum, entry) => sum + BigInt(entry.betWei), 0n).toString(),
@@ -835,11 +848,34 @@ app.post("/api/blackjack/action", requireAuth, async (req, res) => {
           where: { id: session.id },
           data: { bankrollWei: updatedBankroll },
         });
-      }
-      return { hand: updatedHand, session: updatedSession };
-    });
+        let updatedSession = session;
+        if (outcome !== "PENDING") {
+          const updatedBankroll = (BigInt(session.bankrollWei) + payoutWei).toString();
+          updatedSession = await tx.blackjackSession.update({
+            where: { id: session.id },
+            data: { bankrollWei: updatedBankroll },
+          });
+        }
+        return { hand: updatedHand, session: updatedSession };
+      },
+      { isolationLevel: "Serializable" },
+    );
     res.json({ ok: true, session: serializeBlackjackSession(result.session), hand: serializeBlackjackHand(result.hand) });
   } catch (e) {
+    const message = String(e?.message || e);
+    if (
+      message.includes("No active blackjack session") ||
+      message.includes("No active hand") ||
+      message.includes("Double not allowed") ||
+      message.includes("Surrender not allowed") ||
+      message.includes("Split not supported") ||
+      message.includes("Insufficient bankroll") ||
+      message.includes("Hand already resolved") ||
+      message.includes("No playable hand") ||
+      message.includes("Shoe is empty")
+    ) {
+      return res.status(400).json({ error: message });
+    }
     res.status(500).json({ error: String(e) });
   }
 });
@@ -848,6 +884,9 @@ app.post("/api/blackjack/leave", requireAuth, async (req, res) => {
   try {
     const walletAddress = normalizeWallet(req.user?.loginAddress);
     if (!walletAddress) return res.status(403).json({ error: "walletAddress required" });
+    if (!vaultContract || !vaultReadContract || !operatorSigner) {
+      return res.status(500).json({ error: "Vault settlement not configured" });
+    }
     const session = await prisma.blackjackSession.findFirst({
       where: { walletAddress, status: "OPEN" },
       orderBy: { createdAt: "desc" },
@@ -863,33 +902,82 @@ app.post("/api/blackjack/leave", requireAuth, async (req, res) => {
     const buyInWei = BigInt(session.buyInAmountWei);
     const bankrollWei = BigInt(session.bankrollWei);
     const netPnlWei = bankrollWei - buyInWei;
-    let txHash = "skipped";
-    if (!vaultContract || !operatorSigner) {
-      console.warn("Vault not configured for blackjack settlement.");
-    } else {
-      const stake = await fetchVaultBetStake(betId, walletAddress);
-      const stakeWei = BigInt(stake);
-      if (stakeWei < buyInWei) {
-        return res.status(400).json({ error: "Vault stake does not match buy-in" });
+    const stake = await fetchVaultBetStake(betId, walletAddress);
+    const stakeWei = BigInt(stake);
+    if (stakeWei < buyInWei) {
+      return res.status(400).json({ error: "Vault stake does not match buy-in" });
+    }
+    let txHash = null;
+    if (netPnlWei > 0n) {
+      const treasuryAddress = normalizeWallet(TREASURY_ADDRESS);
+      if (!treasuryAddress) {
+        return res.status(500).json({ error: "Treasury address is not configured" });
       }
-      if (netPnlWei > 0n) {
-        const treasuryAddress = normalizeWallet(TREASURY_ADDRESS);
-        if (!vaultReadContract || !treasuryAddress) {
-          return res.status(500).json({ error: "Treasury address is not configured" });
-        }
-        const treasuryAvailableWei = await safeGetAvailableBalance(
+      if (!dynwRead) {
+        return res.status(500).json({ error: "DYNW token address is not configured" });
+      }
+      // --- WIN preflight diagnostics (bankroll + ERC20 reality checks) ---
+      let treasuryAvailableWei = 0n;
+      try {
+        treasuryAvailableWei = await safeGetAvailableBalance(
           vaultReadContract,
           DYNW_TOKEN_ADDRESS,
           treasuryAddress,
         );
-        if (treasuryAvailableWei < netPnlWei) {
-          console.warn("Treasury available insufficient", {
-            treasuryAddress,
-            treasuryAvailableWei: treasuryAvailableWei.toString(),
+      } catch (e) {
+        console.warn("Failed to read treasury available (ledger):", e);
+      }
+      const [treasuryErc20BalRaw, vaultErc20BalRaw, treasuryAllowanceRaw] = await Promise.all([
+        dynwRead.balanceOf(treasuryAddress),
+        dynwRead.balanceOf(VAULT_LEDGER_ADDRESS),
+        dynwRead.allowance(treasuryAddress, VAULT_LEDGER_ADDRESS),
+      ]);
+      const treasuryErc20BalWei = BigInt(treasuryErc20BalRaw);
+      const vaultErc20BalWei = BigInt(vaultErc20BalRaw);
+      const treasuryAllowanceWei = BigInt(treasuryAllowanceRaw);
+      if (treasuryAvailableWei < netPnlWei) {
+        console.warn("Treasury available insufficient", {
+          treasuryAddress,
+          treasuryAvailableWei: treasuryAvailableWei.toString(),
+          netPnlWei: netPnlWei.toString(),
+        });
+        return res.status(400).json({
+          error: "House bankroll insufficient (ledger). Treasury needs funding.",
+          details: {
             netPnlWei: netPnlWei.toString(),
-          });
-          return res.status(400).json({ error: "House bankroll insufficient; treasury needs funding." });
-        }
+            treasuryAvailableWei: treasuryAvailableWei.toString(),
+            treasuryAddress,
+          },
+        });
+      }
+      const hasLiquidityInVault = vaultErc20BalWei >= netPnlWei;
+      const hasLiquidityInTreasury = treasuryErc20BalWei >= netPnlWei;
+      const hasAllowance = treasuryAllowanceWei >= netPnlWei;
+      if (!hasLiquidityInVault && !hasLiquidityInTreasury) {
+        return res.status(400).json({
+          error: "House bankroll insufficient (ERC20). Fund treasury or vault with DYNW to pay winners.",
+          details: {
+            netPnlWei: netPnlWei.toString(),
+            treasuryAddress,
+            treasuryErc20BalWei: treasuryErc20BalWei.toString(),
+            vaultErc20BalWei: vaultErc20BalWei.toString(),
+          },
+        });
+      }
+      if (!hasLiquidityInVault && hasLiquidityInTreasury && !hasAllowance) {
+        return res.status(400).json({
+          error:
+            "Treasury has DYNW but VaultLedger is not approved to spend it. Approve VaultLedger to spend DYNW from treasury.",
+          details: {
+            netPnlWei: netPnlWei.toString(),
+            treasuryAddress,
+            treasuryErc20BalWei: treasuryErc20BalWei.toString(),
+            treasuryAllowanceWei: treasuryAllowanceWei.toString(),
+            spender: VAULT_LEDGER_ADDRESS,
+          },
+        });
+      }
+      try {
         const tx = await vaultContract.settleBet(
           betId,
           DYNW_TOKEN_ADDRESS,
@@ -899,22 +987,41 @@ app.post("/api/blackjack/leave", requireAuth, async (req, res) => {
         );
         await tx.wait();
         txHash = tx.hash;
-      } else if (netPnlWei < 0n) {
-        const tx = await vaultContract.settleBet(
-          betId,
-          DYNW_TOKEN_ADDRESS,
-          -netPnlWei,
-          OUTCOME_LOSE,
-          [walletAddress],
-        );
-        await tx.wait();
-        txHash = tx.hash;
+      } catch (e) {
+        console.error("WIN settleBet failed:", e);
+        return res.status(400).json({
+          error: String(e),
+          details: {
+            betId,
+            netPnlWei: netPnlWei.toString(),
+            treasuryAddress,
+            treasuryAvailableWei: treasuryAvailableWei.toString(),
+            treasuryErc20BalWei: treasuryErc20BalWei.toString(),
+            vaultErc20BalWei: vaultErc20BalWei.toString(),
+            treasuryAllowanceWei: treasuryAllowanceWei.toString(),
+            spender: VAULT_LEDGER_ADDRESS,
+          },
+        });
       }
+    } else if (netPnlWei < 0n) {
+      const tx = await vaultContract.settleBet(
+        betId,
+        DYNW_TOKEN_ADDRESS,
+        -netPnlWei,
+        OUTCOME_LOSE,
+        [walletAddress],
+      );
+      await tx.wait();
+      txHash = tx.hash;
     }
-    const closedSession = await prisma.blackjackSession.update({
-      where: { id: session.id },
-      data: { status: "CLOSED" },
-    });
+    const closedSession = await prisma.$transaction(
+      async (tx) =>
+        tx.blackjackSession.update({
+          where: { id: session.id },
+          data: { status: "CLOSED" },
+        }),
+      { isolationLevel: "Serializable" },
+    );
     res.json({
       ok: true,
       session: serializeBlackjackSession(closedSession),
