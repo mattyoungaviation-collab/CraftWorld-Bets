@@ -581,6 +581,9 @@ app.post("/api/blackjack/buyin", requireAuth, async (req, res) => {
       if (seat && seat.joined && seat.walletAddress !== walletAddress) {
         return res.status(400).json({ error: "Seat already occupied" });
       }
+      if (!seat) {
+        return res.status(400).json({ error: "Seat not found for existing session" });
+      }
     } else {
       seat = findAvailableSeat(requestedSeatId);
       if (!seat) return res.status(400).json({ error: "No available seats" });
