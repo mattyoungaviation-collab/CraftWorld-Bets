@@ -6,6 +6,7 @@ type BlackjackControlsProps = {
   isOwner: boolean;
   hasSession: boolean;
   hasActiveSession: boolean;
+  canLeave: boolean;
   blackjackPhase: "idle" | "player" | "dealer" | "settled";
   canAct: boolean;
   canDouble: boolean;
@@ -28,6 +29,7 @@ export default function BlackjackControls({
   isOwner,
   hasSession,
   hasActiveSession,
+  canLeave,
   blackjackPhase,
   canAct,
   canDouble,
@@ -55,7 +57,7 @@ export default function BlackjackControls({
             {selectedSeatNumber ? `Selected seat: ${selectedSeatNumber}` : "Select a seat to play."}
           </div>
         </div>
-        <button className="btn btn-ghost" onClick={onLeave} disabled={!hasSession}>
+        <button className="btn btn-ghost" onClick={onLeave} disabled={!hasSession || !canLeave}>
           Leave &amp; settle
         </button>
       </div>

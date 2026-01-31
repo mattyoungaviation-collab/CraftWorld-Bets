@@ -401,12 +401,23 @@ function requireLoginWallet(req, walletAddress) {
 }
 
 function parseAmountWei(value) {
-  if (value && typeof value === "object" && value.$type === "BigInt") {
-    value = value.value;
+  if (value && typeof value === "object") {
+    if (value.$type === "BigInt") {
+      value = value.value;
+    }
+    if (typeof value?.value !== "undefined" && (typeof value !== "string" && typeof value !== "bigint")) {
+      value = value.value;
+    }
+    if (value && typeof value.toString === "function" && typeof value !== "string" && typeof value !== "bigint") {
+      value = value.toString();
+    }
   }
   if (typeof value === "bigint") {
     if (value <= 0n) return { error: "amountWei must be positive" };
     return { ok: true, amountWei: value };
+  }
+  if (typeof value === "number") {
+    value = String(value);
   }
   if (typeof value !== "string") return { error: "amountWei required" };
   try {
