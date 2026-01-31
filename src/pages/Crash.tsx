@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { id } from "ethers";
+import { Contract, id } from "ethers";
 import { io } from "socket.io-client";
 import { cashoutCrash, placeCrashBet } from "../lib/apiCrash";
+import { getCrashVaultContract, CRASH_VAULT_ADDRESS } from "../lib/crashVault";
+import { useRoninBalances } from "../lib/useRoninBalances";
 import { DYNW_TOKEN, formatUnits, parseUnits, shortAddress } from "../lib/tokens";
-import { getVaultContract, vaultTokenAddress } from "../lib/vaultLedger";
-import { useVaultLedgerBalance } from "../lib/useVaultLedgerBalance";
 import { useWallet } from "../lib/wallet";
 import "./Crash.css";
 
@@ -60,7 +60,7 @@ function formatAmount(value: number) {
 
 export default function Crash() {
   const { wallet, provider: walletProvider, connectWallet, disconnectWallet, walletConnectEnabled } = useWallet();
-  const { vaultBalance, vaultLocked, refresh: refreshVaultBalance } = useVaultLedgerBalance(wallet, walletProvider);
+  const { dynwBalance, refresh: refreshBalances } = useRoninBalances(wallet, walletProvider);
   const [state, setState] = useState<CrashState>({ phase: "BETTING", roundId: null });
   const [multiplier, setMultiplier] = useState(0.5);
   const [amount, setAmount] = useState(50);
@@ -126,7 +126,7 @@ export default function Crash() {
         )
       );
       if (address.toLowerCase() === loginAddress.toLowerCase()) {
-        refreshVaultBalance();
+        refreshBalances();
       }
     });
 
@@ -141,7 +141,7 @@ export default function Crash() {
     return () => {
       nextSocket.disconnect();
     };
-  }, [loginAddress, refreshVaultBalance]);
+  }, [loginAddress, refreshBalances]);
 
   useEffect(() => {
     if (state.bets) {
@@ -189,20 +189,39 @@ export default function Crash() {
       setToast(`Bet must be between ${MIN_BET} and ${MAX_BET} ${DYNW_TOKEN.symbol}.`);
       return;
     }
+    if (!CRASH_VAULT_ADDRESS) {
+      setToast("Crash vault address is not configured.");
+      return;
+    }
 
     setPending(true);
     try {
-      const vault = await getVaultContract(walletProvider);
-      if (!vault) throw new Error("Vault contract unavailable.");
+      const crashVault = await getCrashVaultContract(walletProvider);
+      if (!crashVault) throw new Error("Crash vault contract unavailable.");
       const betId = id(`crash:${state.roundNumber}`);
       const amountWei = parseUnits(String(amount), DYNW_TOKEN.decimals);
-      setToast("⏳ Locking bet in the Vault Ledger...");
-      const tx = await vault.contract.placeBet(betId, vaultTokenAddress(), amountWei);
+      const browserProvider = await walletProvider.provider;
+      const signer = await browserProvider.getSigner();
+      const erc20 = new Contract(
+        DYNW_TOKEN.address,
+        [
+          "function allowance(address owner, address spender) view returns (uint256)",
+          "function approve(address spender, uint256 amount) returns (bool)",
+        ],
+        signer,
+      );
+      const allowance = await erc20.allowance(wallet, CRASH_VAULT_ADDRESS);
+      if (allowance < amountWei) {
+        setToast("⏳ Approving DYNW for the Crash Vault...");
+        await (await erc20.approve(CRASH_VAULT_ADDRESS, amountWei)).wait();
+      }
+      setToast("⏳ Locking bet in the Crash Vault...");
+      const tx = await crashVault.contract.placeBet(betId, amountWei);
       await tx.wait();
 
       setToast("⏳ Registering crash bet...");
       await placeCrashBet(amount);
-      refreshVaultBalance();
+      refreshBalances();
       setToast("✅ Crash bet locked. Good luck!");
     } catch (e: any) {
       setToast(`❌ ${e?.message || String(e)}`);
@@ -220,7 +239,7 @@ export default function Crash() {
     setPending(true);
     try {
       await cashoutCrash();
-      refreshVaultBalance();
+      refreshBalances();
       setToast("✅ Cashout submitted.");
     } catch (e: any) {
       setToast(`❌ ${e?.message || String(e)}`);
@@ -319,16 +338,14 @@ export default function Crash() {
               />
             </label>
             <div className="crash-balance">
-              <span>Vault available</span>
+              <span>Wallet balance</span>
               <strong>
-                {vaultBalance !== null ? formatAmount(parseFloat(formatUnits(vaultBalance))) : "—"} {DYNW_TOKEN.symbol}
+                {dynwBalance !== null ? formatAmount(parseFloat(formatUnits(dynwBalance))) : "—"} {DYNW_TOKEN.symbol}
               </strong>
             </div>
             <div className="crash-balance">
               <span>Locked this round</span>
-              <strong>
-                {vaultLocked !== null ? formatAmount(parseFloat(formatUnits(vaultLocked))) : "—"} {DYNW_TOKEN.symbol}
-              </strong>
+              <strong>{userBet ? formatAmount(userBet.amount) : "—"} {DYNW_TOKEN.symbol}</strong>
             </div>
             <div className="crash-payout">
               Potential payout: {formatAmount(potentialPayout)} {DYNW_TOKEN.symbol}

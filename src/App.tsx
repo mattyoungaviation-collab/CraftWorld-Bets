@@ -6,12 +6,8 @@ import { useDynwRonPool } from "./lib/useDynwRonPool";
 import { useRoninBalances } from "./lib/useRoninBalances";
 import { DYNW_TOKEN, RONIN_CHAIN, parseUnits, shortAddress } from "./lib/tokens";
 import { useVaultLedgerBalance } from "./lib/useVaultLedgerBalance";
-import {
-  VAULT_LEDGER_ADDRESS,
-  buildBetId,
-  getVaultContract,
-  vaultTokenAddress,
-} from "./lib/vaultLedger";
+import { getMasterpiecePoolContract, MASTERPIECE_POOL_ADDRESS } from "./lib/masterpiecePool";
+import { VAULT_LEDGER_ADDRESS, buildBetId, getVaultContract } from "./lib/vaultLedger";
 import { useWallet } from "./lib/wallet";
 import "./App.css";
 
@@ -1045,6 +1041,10 @@ export default function App() {
       setToast("Please acknowledge the betting terms to continue.");
       return;
     }
+    if (!MASTERPIECE_POOL_ADDRESS) {
+      setToast("Masterpiece pool address is not configured.");
+      return;
+    }
     setPlacing(true);
     setToast("");
     try {
@@ -1066,14 +1066,29 @@ export default function App() {
       if (!walletProvider || !wallet) {
         throw new Error("Connect your wallet to place the bet.");
       }
-      const vault = await getVaultContract(walletProvider);
-      if (!vault) {
-        throw new Error("Vault contract not available.");
-      }
       const amountRaw = parseUnits(String(wagerAmount), DYNW_TOKEN.decimals);
-      setToast("⏳ Placing bet in the vault...");
+      const pool = await getMasterpiecePoolContract(walletProvider);
+      if (!pool) {
+        throw new Error("Masterpiece pool contract not available.");
+      }
+      const browserProvider = await walletProvider.provider;
+      const signer = await browserProvider.getSigner();
+      const erc20 = new Contract(
+        DYNW_TOKEN.address,
+        [
+          "function allowance(address owner, address spender) view returns (uint256)",
+          "function approve(address spender, uint256 amount) returns (bool)",
+        ],
+        signer
+      );
+      const allowance = await erc20.allowance(wallet, MASTERPIECE_POOL_ADDRESS);
+      if (allowance < amountRaw) {
+        setToast("⏳ Approving DYNW for the Masterpiece Pool...");
+        await (await erc20.approve(MASTERPIECE_POOL_ADDRESS, amountRaw)).wait();
+      }
+      setToast("⏳ Placing bet in the Masterpiece Pool...");
       const betId = preview.betId || buildBetId(mpId, selectedPos);
-      const placeTx = await vault.contract.placeBet(betId, vaultTokenAddress(), amountRaw);
+      const placeTx = await pool.contract.placeBet(betId, selectedPos, amountRaw);
       await placeTx.wait();
 
       const r = await authFetch("/api/bets", {
@@ -1529,16 +1544,15 @@ export default function App() {
           <div className="section-title">Betting Terms</div>
           <ul className="terms-list">
             <li>
-              All bets are final once confirmed on-chain. Bets are funded from your Vault Ledger balance after you sign
-              the transaction.
+              All bets are final once confirmed on-chain. Bets are funded by approving DYNW for the Masterpiece Pool
+              or Crash Vault before you sign the transaction.
             </li>
             <li>
-              The settlement operator can only move balances between player ledgers and the on-chain treasury. It
-              cannot withdraw your funds to arbitrary addresses.
+              The settlement operator can only execute payouts from the on-chain pools and treasury. It cannot
+              withdraw your funds to arbitrary addresses.
             </li>
             <li>
-              Winnings are credited back to your Vault Ledger balance. You can withdraw any available balance at any
-              time.
+              Winnings are paid directly to your wallet from the on-chain pool after settlement.
             </li>
             <li>
               All outcomes are recorded on-chain and can be indexed via emitted events for later verification.
@@ -1853,19 +1867,19 @@ export default function App() {
                 </div>
                 <div>
                   <div className="label">Settlement</div>
-                  <div className="title">On-chain Vault Ledger</div>
-                  <div className="subtle">Wagers lock in your vault balance until settlement.</div>
+                  <div className="title">Masterpiece Pool</div>
+                  <div className="subtle">Wagers are held in the on-chain pool until settlement.</div>
                 </div>
               </div>
 
               <div className="terms-box">
                 <p>
-                  By confirming, you authorize the Vault Ledger to lock your wagered amount. Bets are final and cannot
-                  be canceled once confirmed.
+                  By confirming, you authorize the Masterpiece Pool to transfer your wagered amount. Bets are final and
+                  cannot be canceled once confirmed.
                 </p>
                 <p>
-                  Settlement is executed by the operator on-chain, crediting winners back to their vault balances and
-                  accruing losses to the treasury. You can withdraw available balances at any time.
+                  Settlement is executed by the operator on-chain, paying winners directly from the pool and sending
+                  house allocations to the treasury.
                 </p>
                 <p>
                   CraftWorld Bets is not responsible for wallet errors, network congestion, failed transactions, or
@@ -1879,9 +1893,9 @@ export default function App() {
                   checked={acknowledged}
                   onChange={(e) => setAcknowledged(e.target.checked)}
                 />
-                I acknowledge that all bets are final and I authorize the wager from my vault balance.
+                I acknowledge that all bets are final and I authorize the wager from my wallet.
               </label>
-              {!isSignedIn && <div className="toast">Sign in to place the bet from your vault balance.</div>}
+              {!isSignedIn && <div className="toast">Sign in to place the bet from your wallet.</div>}
             </div>
             <div className="modal-actions">
               <button
