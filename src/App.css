@@ -434,6 +434,12 @@ select {
   flex-wrap: wrap;
 }
 
+.blackjack-header-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
 .blackjack-meta {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -451,7 +457,7 @@ select {
 .blackjack-layout {
   display: grid;
   gap: 16px;
-  grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr);
+  grid-template-columns: minmax(0, 2.2fr) minmax(220px, 1fr);
   align-items: start;
 }
 
@@ -472,12 +478,15 @@ select {
   padding: 12px;
   max-height: 360px;
   overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .blackjack-seats-grid {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
 }
 
 .dealer-row {
