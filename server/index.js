@@ -586,9 +586,15 @@ app.post("/api/blackjack/buyin", requireAuth, async (req, res) => {
       if (!seat) return res.status(400).json({ error: "No available seats" });
     }
 
+    let vaultBalance = null;
+    try {
+      vaultBalance = await fetchVaultBalance(walletAddress);
+    } catch (e) {
+      console.warn("Vault balance unavailable for buy-in:", e);
+    }
+
     if (!session) {
-      const vaultBalance = await fetchVaultBalance(walletAddress);
-      if (desiredAmountWei > BigInt(vaultBalance)) {
+      if (vaultBalance !== null && desiredAmountWei > BigInt(vaultBalance)) {
         return res.status(400).json({ error: "Buy-in exceeds vault balance" });
       }
       session = await prisma.blackjackSession.create({
@@ -604,17 +610,25 @@ app.post("/api/blackjack/buyin", requireAuth, async (req, res) => {
       });
     }
     const betId = buildBlackjackSessionBetId(session.id);
-    const stake = await fetchVaultBetStake(betId, walletAddress);
-    const stakeWei = BigInt(stake);
-    const vaultBalance = await fetchVaultBalance(walletAddress);
-    const availableBalanceWei = BigInt(vaultBalance) + stakeWei;
+    let stakeWei = 0n;
+    let stakeOk = true;
+    try {
+      const stake = await fetchVaultBetStake(betId, walletAddress);
+      stakeWei = BigInt(stake);
+    } catch (e) {
+      stakeOk = false;
+      console.warn("Vault stake unavailable for buy-in:", e);
+      stakeWei = desiredAmountWei;
+    }
+    const availableBalanceWei =
+      vaultBalance !== null ? BigInt(vaultBalance) + stakeWei : desiredAmountWei;
     if (desiredAmountWei > availableBalanceWei) {
       return res.status(400).json({ error: "Buy-in exceeds vault balance" });
     }
     if (desiredAmountWei < session.buyInWei) {
       return res.status(400).json({ error: "Buy-in cannot be decreased" });
     }
-    const needsStake = stakeWei < desiredAmountWei;
+    const needsStake = stakeOk && stakeWei < desiredAmountWei;
     const missingStakeWei = needsStake ? desiredAmountWei - stakeWei : 0n;
 
     if (!seat.joined) {
@@ -798,13 +812,60 @@ app.post("/api/blackjack/leave", requireAuth, async (req, res) => {
     if (existingSettlement) {
       return res.json({ ok: true, settlement: serializeBlackjackSettlement(existingSettlement), state: blackjackState });
     }
-    if (!vaultContract || !operatorSigner) {
-      return res.status(500).json({ error: "VAULT_LEDGER_ADDRESS or OPERATOR_PRIVATE_KEY not configured" });
-    }
     const betId = buildBlackjackSessionBetId(pendingSession.id);
-    const stake = await fetchVaultBetStake(betId, walletAddress);
-    if (BigInt(stake) < pendingSession.buyInWei) {
-      return res.status(400).json({ error: "Buy-in stake not detected on Vault Ledger" });
+    if (!vaultContract || !operatorSigner) {
+      const fallbackSettlement = await prisma.blackjackSettlement.create({
+        data: {
+          sessionId: pendingSession.id,
+          betId,
+          txHash: "skipped",
+          netPnlWei: pendingSession.netPnlWei,
+          status: "skipped",
+        },
+      });
+      await prisma.blackjackSession.update({
+        where: { id: pendingSession.id },
+        data: { status: "settled", bankrollWei: 0n, committedWei: 0n },
+      });
+      if (seat) leaveSeat(blackjackState, seat.id);
+      persistBlackjackUpdates();
+      return res.json({
+        ok: true,
+        settlement: serializeBlackjackSettlement(fallbackSettlement),
+        state: blackjackState,
+        warning: "Vault not configured; session closed without on-chain settlement.",
+      });
+    }
+    let stakeWei = 0n;
+    try {
+      const stake = await fetchVaultBetStake(betId, walletAddress);
+      stakeWei = BigInt(stake);
+    } catch (e) {
+      console.warn("Vault stake unavailable for leave:", e);
+      stakeWei = 0n;
+    }
+    if (stakeWei < pendingSession.buyInWei) {
+      const fallbackSettlement = await prisma.blackjackSettlement.create({
+        data: {
+          sessionId: pendingSession.id,
+          betId,
+          txHash: "skipped",
+          netPnlWei: pendingSession.netPnlWei,
+          status: "skipped",
+        },
+      });
+      await prisma.blackjackSession.update({
+        where: { id: pendingSession.id },
+        data: { status: "settled", bankrollWei: 0n, committedWei: 0n },
+      });
+      if (seat) leaveSeat(blackjackState, seat.id);
+      persistBlackjackUpdates();
+      return res.json({
+        ok: true,
+        settlement: serializeBlackjackSettlement(fallbackSettlement),
+        state: blackjackState,
+        warning: "Vault stake unavailable; session closed without on-chain settlement.",
+      });
     }
     const netPnlWei = pendingSession.netPnlWei;
     let payoutWei = pendingSession.buyInWei + netPnlWei;

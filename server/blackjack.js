@@ -353,14 +353,23 @@ export function saveBlackjackState(filePath, state) {
 export function joinSeat(state, seatId, name = "", walletAddress = null, bankrollOverride = null) {
   const seat = state.seats.find((s) => s.id === seatId);
   if (!seat) return { error: "Seat not found" };
-  if (seat.joined) return { error: "Seat already joined" };
+  if (seat.joined) {
+    if (
+      walletAddress &&
+      seat.walletAddress &&
+      seat.walletAddress.toLowerCase() === String(walletAddress).toLowerCase()
+    ) {
+      return { ok: true };
+    }
+    return { error: "Seat already joined" };
+  }
   if (walletAddress) {
     const normalized = String(walletAddress).toLowerCase();
     const existingSeat = state.seats.find(
       (entry) => entry.joined && entry.walletAddress && entry.walletAddress.toLowerCase() === normalized
     );
     if (existingSeat) {
-      return { error: "Wallet already seated" };
+      return { error: `Wallet already seated at seat ${existingSeat.id + 1}` };
     }
   }
   seat.joined = true;

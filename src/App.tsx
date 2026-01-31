@@ -211,6 +211,14 @@ function formatCountdown(ms: number | null) {
   return `${seconds}s`;
 }
 
+function normalizeAssetUrl(url?: string | null) {
+  if (!url) return "";
+  if (url.startsWith("ipfs://")) {
+    return `https://ipfs.io/ipfs/${url.slice("ipfs://".length)}`;
+  }
+  return url;
+}
+
 function basicStrategyDecision(total: number, isSoft: boolean, dealerUpcard: number) {
   if (isSoft) {
     if (total >= 19) return "stand";
@@ -934,7 +942,7 @@ export default function App() {
           map.set(key, {
             uid: row.profile.uid,
             name: row.profile.displayName || row.profile.uid,
-            avatarUrl: row.profile.avatarUrl,
+            avatarUrl: normalizeAssetUrl(row.profile.avatarUrl),
             placements: [],
             contributions: [],
             strength: 0,
@@ -943,7 +951,7 @@ export default function App() {
         const player = map.get(key);
         if (player) {
           player.placements.push(row.position);
-          if (!player.avatarUrl && row.profile.avatarUrl) player.avatarUrl = row.profile.avatarUrl;
+          if (!player.avatarUrl && row.profile.avatarUrl) player.avatarUrl = normalizeAssetUrl(row.profile.avatarUrl);
           if (!player.name && row.profile.displayName) player.name = row.profile.displayName;
           player.contributions.push({
             masterpieceId: entry.id,
@@ -2068,7 +2076,7 @@ export default function App() {
                 <div className="player">
                   {row.avatarUrl ? (
                     <img
-                      src={row.avatarUrl}
+                      src={normalizeAssetUrl(row.avatarUrl)}
                       alt=""
                       className="avatar"
                       onError={(e) => ((e.currentTarget.style.display = "none"))}
@@ -2395,7 +2403,7 @@ export default function App() {
 
           {top100.map((row) => {
             const name = row.profile.displayName || row.profile.uid;
-            const avatar = row.profile.avatarUrl || "";
+            const avatar = normalizeAssetUrl(row.profile.avatarUrl || "");
             const chance = chanceByUid.chances.get(row.profile.uid);
             return (
               <button
