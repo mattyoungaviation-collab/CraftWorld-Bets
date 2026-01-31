@@ -118,44 +118,6 @@ The `contracts/VaultLedger.sol` contract escrows DYNW (and optional WRON) on-cha
 each wallet. Users deposit and withdraw directly. Bets lock internal balances, and the operator can only settle by
 moving value between ledgers and the treasury/fee accounts.
 
-### Blackjack session flow
-
-Blackjack now runs as a session table with a single on-chain lock at buy-in and a single on-chain settlement when the
-player leaves. Gameplay actions are server-authoritative and authenticated via JWT (no per-action wallet signatures).
-
-**Session lifecycle**
-
-1. **Buy-in:** Client calls `POST /api/blackjack/buyin` with `{ seatId, amountWei }`, receives `{ betId }`, and sends
-   a single `placeBet` transaction to lock funds in the Vault Ledger.
-2. **Play:** Client uses JWT-authenticated calls to `POST /api/blackjack/deal` and `POST /api/blackjack/action` for
-   off-chain gameplay. Each hand settles instantly and updates the session bankroll server-side.
-3. **Leave:** Client calls `POST /api/blackjack/leave` once to settle the session. The operator moves net winnings or
-   losses between the player and treasury in a single Vault Ledger settlement.
-
-**Blackjack API**
-
-- `POST /api/blackjack/buyin` → `{ seatId, amountWei }`
-- `GET /api/blackjack/session` → returns the current open session (if any) and latest hand
-- `POST /api/blackjack/deal` → `{ betAmountWei }`
-- `POST /api/blackjack/action` → `{ action: "hit" | "stand" | "double" | "split" | "surrender" }`
-- `POST /api/blackjack/leave` → closes the session and settles net results on-chain
-
-### House game treasury funding (Blackjack)
-
-Blackjack is a house game. Players lock a single buy-in on the VaultLedger, play hands off-chain with that bankroll,
-and settle once when leaving the table. Net winnings are paid from the treasury's internal balance. Make sure the
-treasury address is pre-funded before enabling Blackjack settlements, or winners will be blocked from leaving the
-table. The operator never transfers tokens directly for payouts—it only calls `settleBet` to move internal balances
-between the player and treasury.
-
-**Authorization model:** Option A (operator-settlement). Users call `placeBet` directly from their wallet. The
-`OPERATOR_ROLE` can call `settleBet`, but it can only move balances between internal ledgers and the treasury/fee
-accounts—never withdraw user balances to arbitrary addresses.
-
-**Bet IDs:** The frontend and backend derive bet IDs as `keccak256("cw-bet:<masterpieceId>:<position>")` so all wagers
-for a single market share the same on-chain `betId`. Blackjack sessions use `keccak256("cw-bj:<sessionId>")` for the
-single buy-in lock and final settlement.
-
 ### Deploying the Vault Ledger to Ronin
 
 Provide the deployment secrets via your deployment system (do not commit them), then run:
@@ -221,44 +183,6 @@ Set the server environment variables for settlement and betting:
 - `TREASURY_ADDRESS` – Treasury address used at contract deployment.
 - `FEE_RECIPIENT` – Fee recipient address used at contract deployment.
 - `FEE_BPS` – Fee in basis points used at contract deployment.
-
-### Blackjack session API (smoke)
-
-Use a signed-in JWT (`$TOKEN`) to exercise the blackjack session flow. Gameplay is server-authoritative and off-chain;
-only the buy-in and leave actions touch the VaultLedger contract.
-
-```bash
-# Check your current open session (or null)
-curl -s http://localhost:3000/api/blackjack/session \\
-  -H "authorization: Bearer $TOKEN"
-
-# Check your VaultLedger balance (available + locked)
-curl -s http://localhost:3000/api/blackjack/balance \\
-  -H "authorization: Bearer $TOKEN"
-
-# Buy in (server returns a betId; lock the buy-in on-chain with placeBet)
-curl -s -X POST http://localhost:3000/api/blackjack/buyin \\
-  -H "content-type: application/json" \\
-  -H "authorization: Bearer $TOKEN" \\
-  -d '{"amountWei":"1000000000000000000","seatId":0}'
-
-# Deal a hand with the current wager amount
-curl -s -X POST http://localhost:3000/api/blackjack/deal \\
-  -H "content-type: application/json" \\
-  -H "authorization: Bearer $TOKEN" \\
-  -d '{"betAmountWei":"25000000000000000000"}'
-
-# Perform an action (hit/stand/double/split/surrender)
-curl -s -X POST http://localhost:3000/api/blackjack/action \\
-  -H "content-type: application/json" \\
-  -H "authorization: Bearer $TOKEN" \\
-  -d '{"action":"hit"}'
-
-# Leave the table and trigger settlement
-curl -s -X POST http://localhost:3000/api/blackjack/leave \\
-  -H "content-type: application/json" \\
-  -H "authorization: Bearer $TOKEN"
-```
 
 ### Token assets
 

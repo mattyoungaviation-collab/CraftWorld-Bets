@@ -1,7 +1,6 @@
 import { Contract } from "ethers";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import BlackjackTable from "./components/BlackjackTable";
 import SiteFooter from "./components/SiteFooter";
 import { useDynwRonPool } from "./lib/useDynwRonPool";
 import { useRoninBalances } from "./lib/useRoninBalances";
@@ -194,7 +193,7 @@ export default function App() {
   const coinDecimals = DYNW_TOKEN.decimals;
   const { ronBalance, dynwBalance } = useRoninBalances(wallet, walletProvider);
   const coinBalance = dynwBalance;
-  const [activeTab, setActiveTab] = useState<"betting" | "odds" | "blackjack">("betting");
+  const [activeTab, setActiveTab] = useState<"betting" | "odds">("betting");
   const [oddsRows, setOddsRows] = useState<OddsRow[]>([]);
   const [oddsLoading, setOddsLoading] = useState(false);
   const [oddsError, setOddsError] = useState("");
@@ -1289,12 +1288,6 @@ export default function App() {
         <button className={`tab ${activeTab === "odds" ? "active" : ""}`} onClick={() => setActiveTab("odds")}>
           Sports Odds
         </button>
-        <button
-          className={`tab ${activeTab === "blackjack" ? "active" : ""}`}
-          onClick={() => setActiveTab("blackjack")}
-        >
-          BLACKJACK
-        </button>
       </div>
 
       {activeTab === "betting" && (
@@ -1526,18 +1519,6 @@ export default function App() {
             ))}
           </div>
         </section>
-      )}
-
-      {activeTab === "blackjack" && (
-        <BlackjackTable
-          active={activeTab === "blackjack"}
-          authFetch={authFetch}
-          wallet={wallet}
-          walletProvider={walletProvider}
-          isSignedIn={isSignedIn}
-          coinSymbol={COIN_SYMBOL}
-          coinDecimals={coinDecimals}
-        />
       )}
 
       {activeTab === "betting" && (
