@@ -1554,6 +1554,11 @@ export default function App() {
       setToast("Sign in to buy in.");
       return;
     }
+    if (blackjackSession && blackjackSession.seatId !== seatId) {
+      setSelectedBlackjackSeatId(blackjackSession.seatId);
+      setBlackjackVaultStatus(`❌ You already have a session at seat ${blackjackSession.seatId + 1}.`);
+      return;
+    }
     try {
       const amountRaw = parseUnits(blackjackBuyIn || "0", DYNW_TOKEN.decimals);
       if (amountRaw <= 0n) {
