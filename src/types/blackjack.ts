@@ -1,24 +1,12 @@
-export type Card = {
-  rank: string;
-  suit: string;
-  value: number;
-};
-
-export type BlackjackHandStatus = "playing" | "stood" | "bust" | "blackjack" | "surrendered";
-
-export type BlackjackHandState = {
-  cards: Card[];
-  status: BlackjackHandStatus;
-  betWei: string;
-  isSplit?: boolean;
-};
+export type BlackjackPlayerState = "playing" | "stood" | "bust" | "blackjack" | "surrendered";
 
 export type BlackjackTableState = {
-  dealer: Card[];
-  shoe: Card[];
-  hands: BlackjackHandState[];
-  activeHandIndex: number;
-  phase: "player" | "dealer" | "settled";
+  shoe: string[];
+  shoeIndex: number;
+  playerCards: string[];
+  dealerCards: string[];
+  playerState: BlackjackPlayerState;
+  phase: "player" | "dealer" | "complete";
 };
 
 export type BlackjackSession = {
