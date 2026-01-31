@@ -54,6 +54,10 @@ const BLACKJACK_DECKS = 6;
 const OUTCOME_WIN = 1;
 const OUTCOME_LOSE = 2;
 const OUTCOME_CANCEL = 3;
+const ERC20_READ_ABI = [
+  "function balanceOf(address owner) view returns (uint256)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+];
 const VAULT_LEDGER_ABI = [
   "function placeBet(bytes32 betId, address token, uint256 amount)",
   "function settleBet(bytes32 betId, address token, uint256 totalAmount, uint8 outcome, address[] participants)",
@@ -62,6 +66,7 @@ const VAULT_LEDGER_ABI = [
   "function betStakes(bytes32 betId, address owner) view returns (uint256)",
 ];
 const roninProvider = new JsonRpcProvider(RONIN_RPC);
+const dynwRead = DYNW_TOKEN_ADDRESS ? new Contract(DYNW_TOKEN_ADDRESS, ERC20_READ_ABI, roninProvider) : null;
 const operatorSigner =
   OPERATOR_PRIVATE_KEY && VAULT_LEDGER_ADDRESS ? new Wallet(OPERATOR_PRIVATE_KEY, roninProvider) : null;
 const vaultContract =
@@ -786,28 +791,96 @@ app.post("/api/blackjack/leave", requireAuth, async (req, res) => {
       if (!treasuryAddress) {
         return res.status(500).json({ error: "Treasury address is not configured" });
       }
-      const treasuryAvailableWei = await safeGetAvailableBalance(
-        vaultReadContract,
-        DYNW_TOKEN_ADDRESS,
-        treasuryAddress,
-      );
+      if (!dynwRead) {
+        return res.status(500).json({ error: "DYNW token address is not configured" });
+      }
+      // --- WIN preflight diagnostics (bankroll + ERC20 reality checks) ---
+      let treasuryAvailableWei = 0n;
+      try {
+        treasuryAvailableWei = await safeGetAvailableBalance(
+          vaultReadContract,
+          DYNW_TOKEN_ADDRESS,
+          treasuryAddress,
+        );
+      } catch (e) {
+        console.warn("Failed to read treasury available (ledger):", e);
+      }
+      const [treasuryErc20BalRaw, vaultErc20BalRaw, treasuryAllowanceRaw] = await Promise.all([
+        dynwRead.balanceOf(treasuryAddress),
+        dynwRead.balanceOf(VAULT_LEDGER_ADDRESS),
+        dynwRead.allowance(treasuryAddress, VAULT_LEDGER_ADDRESS),
+      ]);
+      const treasuryErc20BalWei = BigInt(treasuryErc20BalRaw);
+      const vaultErc20BalWei = BigInt(vaultErc20BalRaw);
+      const treasuryAllowanceWei = BigInt(treasuryAllowanceRaw);
       if (treasuryAvailableWei < netPnlWei) {
         console.warn("Treasury available insufficient", {
           treasuryAddress,
           treasuryAvailableWei: treasuryAvailableWei.toString(),
           netPnlWei: netPnlWei.toString(),
         });
-        return res.status(400).json({ error: "House bankroll insufficient; treasury needs funding." });
+        return res.status(400).json({
+          error: "House bankroll insufficient (ledger). Treasury needs funding.",
+          details: {
+            netPnlWei: netPnlWei.toString(),
+            treasuryAvailableWei: treasuryAvailableWei.toString(),
+            treasuryAddress,
+          },
+        });
       }
-      const tx = await vaultContract.settleBet(
-        betId,
-        DYNW_TOKEN_ADDRESS,
-        netPnlWei,
-        OUTCOME_WIN,
-        [walletAddress],
-      );
-      await tx.wait();
-      txHash = tx.hash;
+      const hasLiquidityInVault = vaultErc20BalWei >= netPnlWei;
+      const hasLiquidityInTreasury = treasuryErc20BalWei >= netPnlWei;
+      const hasAllowance = treasuryAllowanceWei >= netPnlWei;
+      if (!hasLiquidityInVault && !hasLiquidityInTreasury) {
+        return res.status(400).json({
+          error: "House bankroll insufficient (ERC20). Fund treasury or vault with DYNW to pay winners.",
+          details: {
+            netPnlWei: netPnlWei.toString(),
+            treasuryAddress,
+            treasuryErc20BalWei: treasuryErc20BalWei.toString(),
+            vaultErc20BalWei: vaultErc20BalWei.toString(),
+          },
+        });
+      }
+      if (!hasLiquidityInVault && hasLiquidityInTreasury && !hasAllowance) {
+        return res.status(400).json({
+          error:
+            "Treasury has DYNW but VaultLedger is not approved to spend it. Approve VaultLedger to spend DYNW from treasury.",
+          details: {
+            netPnlWei: netPnlWei.toString(),
+            treasuryAddress,
+            treasuryErc20BalWei: treasuryErc20BalWei.toString(),
+            treasuryAllowanceWei: treasuryAllowanceWei.toString(),
+            spender: VAULT_LEDGER_ADDRESS,
+          },
+        });
+      }
+      try {
+        const tx = await vaultContract.settleBet(
+          betId,
+          DYNW_TOKEN_ADDRESS,
+          netPnlWei,
+          OUTCOME_WIN,
+          [walletAddress],
+        );
+        await tx.wait();
+        txHash = tx.hash;
+      } catch (e) {
+        console.error("WIN settleBet failed:", e);
+        return res.status(400).json({
+          error: String(e),
+          details: {
+            betId,
+            netPnlWei: netPnlWei.toString(),
+            treasuryAddress,
+            treasuryAvailableWei: treasuryAvailableWei.toString(),
+            treasuryErc20BalWei: treasuryErc20BalWei.toString(),
+            vaultErc20BalWei: vaultErc20BalWei.toString(),
+            treasuryAllowanceWei: treasuryAllowanceWei.toString(),
+            spender: VAULT_LEDGER_ADDRESS,
+          },
+        });
+      }
     } else if (netPnlWei < 0n) {
       const tx = await vaultContract.settleBet(
         betId,
