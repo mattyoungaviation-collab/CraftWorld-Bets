@@ -7,12 +7,7 @@ import jwt from "jsonwebtoken";
 import { Contract, JsonRpcProvider, Wallet, parseUnits, verifyMessage } from "ethers";
 import { makeStore, newId, settleMarket } from "./betting.js";
 import { getOrCreateUser, prisma } from "./db.js";
-import {
-  buildBlackjackSessionBetId,
-  getVaultReadContract,
-  safeGetAvailableBalance,
-  safeGetLockedBalance,
-} from "./lib/vaultLedger.js";
+import { buildBlackjackSessionBetId, getVaultReadContract, safeGetAvailableBalance } from "./lib/vaultLedger.js";
 import { computeModelOdds } from "./odds.js";
 
 const app = express();
@@ -216,75 +211,6 @@ function requireConfiguredEnv(required, message) {
   }
 }
 
-function ensureWalletRecord(address) {
-  const normalized = normalizeWallet(address);
-  if (!normalized) return null;
-  let existing = store.wallets[normalized];
-  const legacyRoninKey = normalized.startsWith("0x") ? `ronin:${normalized.slice(2)}` : null;
-  const legacy = legacyRoninKey ? store.wallets[legacyRoninKey] : null;
-  if (!existing && legacy) {
-    store.wallets[normalized] = {
-      ...legacy,
-      address: normalized,
-      balance: Number(legacy.balance || 0),
-      ledger: Array.isArray(legacy.ledger) ? legacy.ledger : [],
-      betIds: Array.isArray(legacy.betIds) ? legacy.betIds : [],
-      lastSeenAt: new Date().toISOString(),
-    };
-    delete store.wallets[legacyRoninKey];
-    existing = store.wallets[normalized];
-  } else if (existing && legacy) {
-    existing.balance = Number(existing.balance || 0) + Number(legacy.balance || 0);
-    existing.ledger = [...(Array.isArray(existing.ledger) ? existing.ledger : []), ...(legacy.ledger || [])];
-    existing.betIds = [...(Array.isArray(existing.betIds) ? existing.betIds : []), ...(legacy.betIds || [])];
-    existing.lastSeenAt = new Date().toISOString();
-    delete store.wallets[legacyRoninKey];
-  }
-  if (existing) {
-    existing.lastSeenAt = new Date().toISOString();
-    existing.balance = Number(existing.balance || 0);
-    if (!Array.isArray(existing.ledger)) existing.ledger = [];
-    return existing;
-  }
-  const record = {
-    address: normalized,
-    firstSeenAt: new Date().toISOString(),
-    lastSeenAt: new Date().toISOString(),
-    betIds: [],
-    balance: 0,
-    ledger: [],
-  };
-  store.wallets[normalized] = record;
-  return record;
-}
-
-function addLedgerEntry(address, entry) {
-  const record = ensureWalletRecord(address);
-  if (!record) return null;
-  record.ledger = Array.isArray(record.ledger) ? record.ledger : [];
-  record.balance = Number(record.balance || 0);
-  record.balance += Number(entry.amount || 0);
-  record.ledger.push({
-    id: newId(),
-    createdAt: new Date().toISOString(),
-    ...entry,
-  });
-  if (record.ledger.length > 100) {
-    record.ledger = record.ledger.slice(-100);
-  }
-  return record;
-}
-
-function requireLoginWallet(req, walletAddress) {
-  const normalized = normalizeWallet(walletAddress);
-  if (!normalized) return { error: "walletAddress required" };
-  const loginAddress = normalizeWallet(req.user?.loginAddress);
-  if (!loginAddress || normalized !== loginAddress) {
-    return { error: "walletAddress does not match signed-in wallet" };
-  }
-  return { ok: true, walletAddress: normalized };
-}
-
 function coerceSerializedValue(value) {
   let current = value;
   let depth = 0;
@@ -450,20 +376,6 @@ function settleHandState(tableState) {
   return { tableState, payoutWei, results };
 }
 
-async function fetchVaultBalances(walletAddress) {
-  if (!vaultReadContract) {
-    throw new Error("VAULT_LEDGER_ADDRESS is not configured");
-  }
-
-  const [availableWei, lockedWei] = await Promise.all([
-    safeGetAvailableBalance(vaultReadContract, DYNW_TOKEN_ADDRESS, walletAddress),
-    safeGetLockedBalance(vaultReadContract, DYNW_TOKEN_ADDRESS, walletAddress),
-  ]);
-
-  const balanceWei = availableWei + lockedWei;
-  return { balance: balanceWei, locked: lockedWei };
-}
-
 async function fetchVaultBetStake(betId, walletAddress) {
   if (!vaultReadContract) {
     throw new Error("VAULT_LEDGER_ADDRESS is not configured");
@@ -537,25 +449,6 @@ app.get("/api/blackjack/session", requireAuth, async (req, res) => {
   }
 });
 
-app.get("/api/blackjack/balance", requireAuth, async (req, res) => {
-  try {
-    const walletAddress = normalizeWallet(req.query.wallet);
-    const authCheck = requireLoginWallet(req, walletAddress);
-    if (authCheck.error) return res.status(403).json({ error: authCheck.error });
-    const { balance, locked } = await fetchVaultBalances(authCheck.walletAddress);
-    const available = balance - locked;
-    res.json({
-      ok: true,
-      wallet: authCheck.walletAddress,
-      balance: balance.toString(),
-      locked: locked.toString(),
-      available: available.toString(),
-    });
-  } catch (e) {
-    res.status(500).json({ error: String(e) });
-  }
-});
-
 app.post("/api/blackjack/buyin", requireAuth, async (req, res) => {
   try {
     const amountCheck = parseWeiString(req.body?.amountWei);
@@ -566,39 +459,39 @@ app.post("/api/blackjack/buyin", requireAuth, async (req, res) => {
     }
     const walletAddress = normalizeWallet(req.user?.loginAddress);
     if (!walletAddress) return res.status(403).json({ error: "walletAddress required" });
-    let availableWei = null;
-    try {
-      const { balance, locked } = await fetchVaultBalances(walletAddress);
-      availableWei = balance - locked;
-    } catch (e) {
-      console.warn("Vault balance unavailable for buy-in:", e);
+    if (!vaultReadContract) {
+      return res.status(500).json({ error: "VAULT_LEDGER_ADDRESS is not configured" });
     }
-    if (availableWei !== null && amountCheck.amountWei > availableWei) {
+    const availableWei = await safeGetAvailableBalance(vaultReadContract, DYNW_TOKEN_ADDRESS, walletAddress);
+    if (amountCheck.amountWei > availableWei) {
       return res.status(400).json({ error: "Buy-in exceeds vault balance" });
     }
-    const session = await prisma.$transaction(async (tx) => {
-      const existing = await tx.blackjackSession.findFirst({
-        where: { walletAddress, status: "OPEN" },
-      });
-      if (existing) {
-        throw new Error("Active blackjack session already open");
-      }
-      const seatTaken = await tx.blackjackSession.findFirst({
-        where: { seatId, status: "OPEN" },
-      });
-      if (seatTaken) {
-        throw new Error("Seat already occupied");
-      }
-      return tx.blackjackSession.create({
-        data: {
-          walletAddress,
-          seatId,
-          buyInAmountWei: amountCheck.amountWei.toString(),
-          bankrollWei: amountCheck.amountWei.toString(),
-          status: "OPEN",
-        },
-      });
-    });
+    const session = await prisma.$transaction(
+      async (tx) => {
+        const existing = await tx.blackjackSession.findFirst({
+          where: { walletAddress, status: "OPEN" },
+        });
+        if (existing) {
+          throw new Error("Active blackjack session already open");
+        }
+        const seatTaken = await tx.blackjackSession.findFirst({
+          where: { seatId, status: "OPEN" },
+        });
+        if (seatTaken) {
+          throw new Error("Seat already occupied");
+        }
+        return tx.blackjackSession.create({
+          data: {
+            walletAddress,
+            seatId,
+            buyInAmountWei: amountCheck.amountWei.toString(),
+            bankrollWei: amountCheck.amountWei.toString(),
+            status: "OPEN",
+          },
+        });
+      },
+      { isolationLevel: "Serializable" },
+    );
     const betId = buildBlackjackSessionBetId(session.id);
     res.json({
       ok: true,
@@ -682,26 +575,29 @@ app.post("/api/blackjack/deal", requireAuth, async (req, res) => {
         outcome = "DEALER_WIN";
       }
     }
-    const result = await prisma.$transaction(async (tx) => {
-      const hand = await tx.blackjackHand.create({
-        data: {
-          sessionId: session.id,
-          betAmountWei: amountCheck.amountWei.toString(),
-          stateJson: tableState,
-          outcome,
-          payoutWei: payoutWei.toString(),
-        },
-      });
-      let updatedSession = session;
-      if (outcome !== "PENDING") {
-        const updatedBankroll = (BigInt(session.bankrollWei) + payoutWei).toString();
-        updatedSession = await tx.blackjackSession.update({
-          where: { id: session.id },
-          data: { bankrollWei: updatedBankroll },
+    const result = await prisma.$transaction(
+      async (tx) => {
+        const hand = await tx.blackjackHand.create({
+          data: {
+            sessionId: session.id,
+            betAmountWei: amountCheck.amountWei.toString(),
+            stateJson: tableState,
+            outcome,
+            payoutWei: payoutWei.toString(),
+          },
         });
-      }
-      return { hand, session: updatedSession };
-    });
+        let updatedSession = session;
+        if (outcome !== "PENDING") {
+          const updatedBankroll = (BigInt(session.bankrollWei) + payoutWei).toString();
+          updatedSession = await tx.blackjackSession.update({
+            where: { id: session.id },
+            data: { bankrollWei: updatedBankroll },
+          });
+        }
+        return { hand, session: updatedSession };
+      },
+      { isolationLevel: "Serializable" },
+    );
     res.json({ ok: true, session: serializeBlackjackSession(result.session), hand: serializeBlackjackHand(result.hand) });
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -829,25 +725,28 @@ app.post("/api/blackjack/action", requireAuth, async (req, res) => {
       }
     }
 
-    const result = await prisma.$transaction(async (tx) => {
-      const updatedHand = await tx.blackjackHand.update({
-        where: { id: hand.id },
-        data: {
-          stateJson: tableState,
-          outcome,
-          payoutWei: payoutWei.toString(),
-        },
-      });
-      let updatedSession = session;
-      if (outcome !== "PENDING") {
-        const updatedBankroll = (BigInt(session.bankrollWei) + payoutWei).toString();
-        updatedSession = await tx.blackjackSession.update({
-          where: { id: session.id },
-          data: { bankrollWei: updatedBankroll },
+    const result = await prisma.$transaction(
+      async (tx) => {
+        const updatedHand = await tx.blackjackHand.update({
+          where: { id: hand.id },
+          data: {
+            stateJson: tableState,
+            outcome,
+            payoutWei: payoutWei.toString(),
+          },
         });
-      }
-      return { hand: updatedHand, session: updatedSession };
-    });
+        let updatedSession = session;
+        if (outcome !== "PENDING") {
+          const updatedBankroll = (BigInt(session.bankrollWei) + payoutWei).toString();
+          updatedSession = await tx.blackjackSession.update({
+            where: { id: session.id },
+            data: { bankrollWei: updatedBankroll },
+          });
+        }
+        return { hand: updatedHand, session: updatedSession };
+      },
+      { isolationLevel: "Serializable" },
+    );
     res.json({ ok: true, session: serializeBlackjackSession(result.session), hand: serializeBlackjackHand(result.hand) });
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -858,6 +757,9 @@ app.post("/api/blackjack/leave", requireAuth, async (req, res) => {
   try {
     const walletAddress = normalizeWallet(req.user?.loginAddress);
     if (!walletAddress) return res.status(403).json({ error: "walletAddress required" });
+    if (!vaultContract || !vaultReadContract || !operatorSigner) {
+      return res.status(500).json({ error: "Vault settlement not configured" });
+    }
     const session = await prisma.blackjackSession.findFirst({
       where: { walletAddress, status: "OPEN" },
       orderBy: { createdAt: "desc" },
@@ -873,58 +775,58 @@ app.post("/api/blackjack/leave", requireAuth, async (req, res) => {
     const buyInWei = BigInt(session.buyInAmountWei);
     const bankrollWei = BigInt(session.bankrollWei);
     const netPnlWei = bankrollWei - buyInWei;
-    let txHash = "skipped";
-    if (!vaultContract || !operatorSigner) {
-      console.warn("Vault not configured for blackjack settlement.");
-    } else {
-      const stake = await fetchVaultBetStake(betId, walletAddress);
-      const stakeWei = BigInt(stake);
-      if (stakeWei < buyInWei) {
-        return res.status(400).json({ error: "Vault stake does not match buy-in" });
-      }
-      if (netPnlWei > 0n) {
-        const treasuryAddress = normalizeWallet(TREASURY_ADDRESS);
-        if (!vaultReadContract || !treasuryAddress) {
-          return res.status(500).json({ error: "Treasury address is not configured" });
-        }
-        const treasuryAvailableWei = await safeGetAvailableBalance(
-          vaultReadContract,
-          DYNW_TOKEN_ADDRESS,
-          treasuryAddress,
-        );
-        if (treasuryAvailableWei < netPnlWei) {
-          console.warn("Treasury available insufficient", {
-            treasuryAddress,
-            treasuryAvailableWei: treasuryAvailableWei.toString(),
-            netPnlWei: netPnlWei.toString(),
-          });
-          return res.status(400).json({ error: "House bankroll insufficient; treasury needs funding." });
-        }
-        const tx = await vaultContract.settleBet(
-          betId,
-          DYNW_TOKEN_ADDRESS,
-          netPnlWei,
-          OUTCOME_WIN,
-          [walletAddress],
-        );
-        await tx.wait();
-        txHash = tx.hash;
-      } else if (netPnlWei < 0n) {
-        const tx = await vaultContract.settleBet(
-          betId,
-          DYNW_TOKEN_ADDRESS,
-          -netPnlWei,
-          OUTCOME_LOSE,
-          [walletAddress],
-        );
-        await tx.wait();
-        txHash = tx.hash;
-      }
+    const stake = await fetchVaultBetStake(betId, walletAddress);
+    const stakeWei = BigInt(stake);
+    if (stakeWei < buyInWei) {
+      return res.status(400).json({ error: "Vault stake does not match buy-in" });
     }
-    const closedSession = await prisma.blackjackSession.update({
-      where: { id: session.id },
-      data: { status: "CLOSED" },
-    });
+    let txHash = null;
+    if (netPnlWei > 0n) {
+      const treasuryAddress = normalizeWallet(TREASURY_ADDRESS);
+      if (!treasuryAddress) {
+        return res.status(500).json({ error: "Treasury address is not configured" });
+      }
+      const treasuryAvailableWei = await safeGetAvailableBalance(
+        vaultReadContract,
+        DYNW_TOKEN_ADDRESS,
+        treasuryAddress,
+      );
+      if (treasuryAvailableWei < netPnlWei) {
+        console.warn("Treasury available insufficient", {
+          treasuryAddress,
+          treasuryAvailableWei: treasuryAvailableWei.toString(),
+          netPnlWei: netPnlWei.toString(),
+        });
+        return res.status(400).json({ error: "House bankroll insufficient; treasury needs funding." });
+      }
+      const tx = await vaultContract.settleBet(
+        betId,
+        DYNW_TOKEN_ADDRESS,
+        netPnlWei,
+        OUTCOME_WIN,
+        [walletAddress],
+      );
+      await tx.wait();
+      txHash = tx.hash;
+    } else if (netPnlWei < 0n) {
+      const tx = await vaultContract.settleBet(
+        betId,
+        DYNW_TOKEN_ADDRESS,
+        -netPnlWei,
+        OUTCOME_LOSE,
+        [walletAddress],
+      );
+      await tx.wait();
+      txHash = tx.hash;
+    }
+    const closedSession = await prisma.$transaction(
+      async (tx) =>
+        tx.blackjackSession.update({
+          where: { id: session.id },
+          data: { status: "CLOSED" },
+        }),
+      { isolationLevel: "Serializable" },
+    );
     res.json({
       ok: true,
       session: serializeBlackjackSession(closedSession),

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { parseUnits } from "../lib/tokens";
+import { useVaultLedgerBalance } from "../lib/useVaultLedgerBalance";
 import { getVaultContract, vaultTokenAddress } from "../lib/vaultLedger";
 import type { BlackjackHand, BlackjackSession, BlackjackTableState } from "../types/blackjack";
 
@@ -19,7 +20,6 @@ type BlackjackTableProps = {
   wallet: string | null;
   walletProvider: any;
   isSignedIn: boolean;
-  loginAddress: string | null;
   coinSymbol: string;
   coinDecimals: number;
 };
@@ -62,7 +62,6 @@ export default function BlackjackTable({
   wallet,
   walletProvider,
   isSignedIn,
-  loginAddress,
   coinSymbol,
   coinDecimals,
 }: BlackjackTableProps) {
@@ -71,10 +70,12 @@ export default function BlackjackTable({
   const [selectedSeatId, setSelectedSeatId] = useState<number | null>(null);
   const [buyInAmount, setBuyInAmount] = useState("");
   const [betAmount, setBetAmount] = useState("");
-  const [vaultBalanceWei, setVaultBalanceWei] = useState<bigint | null>(null);
   const [vaultStatus, setVaultStatus] = useState("");
   const [settlementStatus, setSettlementStatus] = useState("");
   const [loading, setLoading] = useState(false);
+  const { vaultBalance, vaultLocked, refresh: refreshVaultBalance } = useVaultLedgerBalance(wallet, walletProvider);
+  const availableVaultWei =
+    vaultBalance !== null && vaultLocked !== null ? vaultBalance - vaultLocked : vaultBalance;
 
   const refreshSession = useCallback(async () => {
     if (!isSignedIn) {
@@ -91,26 +92,12 @@ export default function BlackjackTable({
     setHand(json.hand || null);
   }, [authFetch, isSignedIn]);
 
-  const refreshVaultBalance = useCallback(async () => {
-    if (!loginAddress || !isSignedIn) {
-      setVaultBalanceWei(null);
-      return;
-    }
-    const response = await authFetch(`/api/blackjack/balance?wallet=${encodeURIComponent(loginAddress)}`);
-    const json = await response.json();
-    if (!response.ok) {
-      throw new Error(json?.error || "Failed to load vault balance");
-    }
-    setVaultBalanceWei(BigInt(json.available ?? json.balance ?? "0"));
-  }, [authFetch, isSignedIn, loginAddress]);
-
   useEffect(() => {
     if (!active) return;
     setVaultStatus("");
     setSettlementStatus("");
     refreshSession().catch((e) => setVaultStatus(e?.message || "Failed to load session"));
-    refreshVaultBalance().catch((e) => setVaultStatus(e?.message || "Failed to load vault balance"));
-  }, [active, refreshSession, refreshVaultBalance]);
+  }, [active, refreshSession]);
 
   useEffect(() => {
     if (session?.seatId !== undefined && session?.seatId !== null) {
@@ -132,6 +119,7 @@ export default function BlackjackTable({
     activeHandState.cards[0]?.rank === activeHandState.cards[1]?.rank;
   const canDouble = canAct && activeHandState?.cards?.length === 2;
   const canSurrender = canAct && activeHandState?.cards?.length === 2 && hand?.stateJson?.hands?.length === 1;
+  const canDeal = Boolean(session && (!hand || hand.outcome !== "PENDING"));
 
   const seatButtons = Array.from({ length: SEAT_COUNT }, (_, index) => {
     const isSelected = selectedSeatId === index;
@@ -268,7 +256,7 @@ export default function BlackjackTable({
       setSettlementStatus(
         json?.settlement?.txHash
           ? `✅ Settlement confirmed: ${json.settlement.txHash}`
-          : "✅ Session closed."
+          : "✅ Session settled."
       );
       setSession(null);
       setHand(null);
@@ -283,6 +271,7 @@ export default function BlackjackTable({
 
   const dealerCards = hand?.stateJson?.dealer ?? [];
   const dealerTotals = dealerCards.length ? getHandTotals(dealerCards) : null;
+  const latestOutcomeLabel = hand ? hand.outcome.replace(/_/g, " ") : "Waiting";
 
   return (
     <section className="card blackjack-card">
@@ -293,18 +282,22 @@ export default function BlackjackTable({
             Session-based table · One lock tx to buy in · Off-chain gameplay · One settle tx to leave.
           </div>
         </div>
-        {session && (
-          <button className="btn btn-ghost" type="button" onClick={handleLeave} disabled={loading}>
-            Leave &amp; settle
-          </button>
-        )}
+        <div className="blackjack-header-actions">
+          {session && (
+            <button className="btn btn-ghost" type="button" onClick={handleLeave} disabled={loading}>
+              Leave &amp; settle
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="blackjack-meta">
         <div>
           <div className="label">Vault balance</div>
           <div className="title">
-            {vaultBalanceWei !== null ? `${formatTokenAmount(vaultBalanceWei, coinDecimals)} ${coinSymbol}` : "—"}
+            {availableVaultWei !== null
+              ? `${formatTokenAmount(availableVaultWei, coinDecimals)} ${coinSymbol}`
+              : "—"}
           </div>
           <div className="subtle">Available for blackjack buy-ins.</div>
         </div>
@@ -316,13 +309,13 @@ export default function BlackjackTable({
           <div className="subtle">Updated after each hand settles.</div>
         </div>
         <div>
-          <div className="label">Seat</div>
-          <div className="title">{session ? `Seat ${session.seatId + 1}` : "Not seated"}</div>
-          <div className="subtle">Pick a seat and buy in to join.</div>
+          <div className="label">Session</div>
+          <div className="title">{session ? `Seat ${session.seatId + 1}` : "No active seat"}</div>
+          <div className="subtle">{session ? "Bankroll locked and active." : "Pick a seat to join."}</div>
         </div>
         <div>
           <div className="label">Hand status</div>
-          <div className="title">{hand ? hand.outcome.replace(/_/g, " ") : "Waiting"}</div>
+          <div className="title">{latestOutcomeLabel}</div>
           <div className="subtle">Dealer hits soft 17 · Blackjack pays 3:2.</div>
         </div>
       </div>
@@ -413,17 +406,7 @@ export default function BlackjackTable({
             </div>
           )}
 
-          {session && hand && hand.outcome !== "PENDING" && (
-            <div className="control-group">
-              <div className="label">Last payout</div>
-              <div className="title">
-                {formatTokenAmount(BigInt(hand.payoutWei), coinDecimals)} {coinSymbol}
-              </div>
-              <div className="subtle">Net change applied to bankroll.</div>
-            </div>
-          )}
-
-          {session && (!hand || hand.outcome !== "PENDING") && (
+          {session && canDeal && (
             <div className="control-group">
               <label htmlFor="blackjack-bet">Bet per hand</label>
               <input
@@ -484,10 +467,22 @@ export default function BlackjackTable({
             </div>
           )}
 
+          {session && hand && hand.outcome !== "PENDING" && (
+            <div className="control-group">
+              <div className="label">Last payout</div>
+              <div className="title">
+                {formatTokenAmount(BigInt(hand.payoutWei), coinDecimals)} {coinSymbol}
+              </div>
+              <div className="subtle">Net change applied to bankroll.</div>
+            </div>
+          )}
+
           {session && (
             <div className="control-group">
-              <div className="label">Session</div>
-              <div className="subtle">Buy-in: {formatTokenAmount(BigInt(session.buyInAmountWei), coinDecimals)} {coinSymbol}</div>
+              <div className="label">Session details</div>
+              <div className="subtle">
+                Buy-in: {formatTokenAmount(BigInt(session.buyInAmountWei), coinDecimals)} {coinSymbol}
+              </div>
               <div className="subtle">Seat: {session.seatId + 1}</div>
             </div>
           )}
