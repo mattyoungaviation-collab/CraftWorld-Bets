@@ -4,34 +4,9 @@ import crypto from "crypto";
 import { fileURLToPath } from "url";
 import express from "express";
 import jwt from "jsonwebtoken";
-import {
-  Contract,
-  JsonRpcProvider,
-  Wallet,
-  formatUnits,
-  parseUnits,
-  verifyMessage,
-} from "ethers";
+import { Contract, JsonRpcProvider, Wallet, parseUnits, verifyMessage } from "ethers";
 import { makeStore, newId, settleMarket } from "./betting.js";
 import { getOrCreateUser, prisma } from "./db.js";
-import {
-  createDefaultBlackjackState,
-  normalizeBlackjackState,
-  clearSeatsForRestart,
-  joinSeat,
-  leaveSeat,
-  updateSeat,
-  shuffleShoe,
-  startRound,
-  hit,
-  stand,
-  doubleDown,
-  splitHand,
-  timeoutStand,
-  resetRound,
-  BLACKJACK_MIN_BET,
-  ROUND_COOLDOWN_MS,
-} from "./blackjack.js";
 import { buildBlackjackSessionBetId, getVaultReadContract } from "./lib/vaultLedger.js";
 import { computeModelOdds } from "./odds.js";
 
@@ -57,56 +32,6 @@ fs.mkdirSync(dataDir, { recursive: true });
 const { store, persist } = makeStore(dataDir);
 const oddsHistoryPath = path.join(dataDir, "odds_history.json");
 const modelHistoryPath = path.join(dataDir, "history.json");
-const blackjackTableId = "default";
-const blackjackState = await loadBlackjackStateFromDb();
-
-async function loadBlackjackStateFromDb() {
-  const record = await prisma.blackjackTableState.findUnique({ where: { id: blackjackTableId } });
-  if (record?.state) {
-    const state = normalizeBlackjackState(record.state);
-    clearSeatsForRestart(state);
-    await prisma.blackjackTableState.update({ where: { id: blackjackTableId }, data: { state } });
-    return state;
-  }
-  const state = createDefaultBlackjackState();
-  await prisma.blackjackTableState.create({ data: { id: blackjackTableId, state } });
-  return state;
-}
-
-async function persistBlackjackState() {
-  await prisma.blackjackTableState.upsert({
-    where: { id: blackjackTableId },
-    update: { state: blackjackState },
-    create: { id: blackjackTableId, state: blackjackState },
-  });
-}
-
-function queueNextRoundIfNeeded() {
-  const hasPlayers = blackjackState.seats.some(
-    (seat) => seat.joined && seat.readyForNextRound && seat.pendingBetAmount > 0
-  );
-  if (!hasPlayers) return false;
-  const now = Date.now();
-  if (blackjackState.phase === "player" || blackjackState.phase === "dealer") return false;
-  if (!blackjackState.cooldownExpiresAt || blackjackState.cooldownExpiresAt <= now) {
-    blackjackState.cooldownExpiresAt = now + ROUND_COOLDOWN_MS;
-    blackjackState.log = [
-      `Next round starts in ${Math.floor(ROUND_COOLDOWN_MS / 1000)}s.`,
-      ...(blackjackState.log || []),
-    ].slice(0, 6);
-    blackjackState.updatedAt = new Date().toISOString();
-    return true;
-  }
-  return false;
-}
-
-function tryStartNextRound() {
-  const now = Date.now();
-  if (blackjackState.phase === "player" || blackjackState.phase === "dealer") return false;
-  if (blackjackState.cooldownExpiresAt && blackjackState.cooldownExpiresAt > now) return false;
-  const result = startRound(blackjackState);
-  return !result.error;
-}
 
 // ---- Craft World GraphQL ----
 const GRAPHQL_URL = "https://craft-world.gg/graphql";
@@ -121,6 +46,10 @@ const DYNW_TOKEN_ADDRESS = process.env.DYNW_TOKEN_ADDRESS || "0x17ff4EA5dD318E5F
 const VAULT_LEDGER_ADDRESS = process.env.VAULT_LEDGER_ADDRESS || "";
 const OPERATOR_PRIVATE_KEY = process.env.OPERATOR_PRIVATE_KEY || "";
 const DYNW_DECIMALS = 18;
+const BLACKJACK_TABLE_MIN_BET_WEI = process.env.BLACKJACK_MIN_BET_WEI
+  ? BigInt(process.env.BLACKJACK_MIN_BET_WEI)
+  : parseUnits("25", DYNW_DECIMALS);
+const BLACKJACK_DECKS = 6;
 const VAULT_LEDGER_ABI = [
   "function placeBet(bytes32 betId, address token, uint256 amount)",
   "function settleBet(bytes32 betId, address[] participants, uint256[] payouts)",
@@ -337,59 +266,6 @@ function addLedgerEntry(address, entry) {
   return record;
 }
 
-function persistBlackjackUpdates() {
-  persistBlackjackState().catch((e) => console.error("Failed to persist blackjack state:", e));
-}
-
-async function applyBlackjackRoundResults() {
-  if (blackjackState.phase !== "settled") return;
-  if (!blackjackState.activeRoundId) return;
-  if (blackjackState.lastSettledRoundId === blackjackState.activeRoundId) return;
-  const results = Array.isArray(blackjackState.lastRoundResults) ? blackjackState.lastRoundResults : [];
-  if (results.length === 0) {
-    blackjackState.lastSettledRoundId = blackjackState.activeRoundId;
-    persistBlackjackUpdates();
-    return;
-  }
-  for (const result of results) {
-    if (!result?.walletAddress) continue;
-    const walletAddress = normalizeWallet(result.walletAddress);
-    if (!walletAddress) continue;
-    const session = await prisma.blackjackSession.findFirst({
-      where: { walletAddress, status: "active" },
-    });
-    if (!session) continue;
-    const totalBetWei = parseUnits(String(result.totalBet || 0), DYNW_DECIMALS);
-    const payoutWei = parseUnits(String(result.payoutTotal || 0), DYNW_DECIMALS);
-    const netPnlWei = payoutWei - totalBetWei;
-    await prisma.blackjackSession.update({
-      where: { id: session.id },
-      data: {
-        bankrollWei: session.bankrollWei + payoutWei,
-        committedWei: session.committedWei - totalBetWei,
-        netPnlWei: session.netPnlWei + netPnlWei,
-      },
-    });
-    const seat = blackjackState.seats.find((entry) => entry.id === session.seatId);
-    if (seat) {
-      seat.bankroll = Number(formatUnits(session.bankrollWei + payoutWei, DYNW_DECIMALS));
-    }
-  }
-  blackjackState.lastSettledRoundId = blackjackState.activeRoundId;
-  persistBlackjackUpdates();
-}
-
-function requireSeatOwner(seatId, walletAddress) {
-  const seat = blackjackState.seats.find((s) => s.id === seatId);
-  if (!seat || !seat.joined) return { error: "Seat not found" };
-  const normalized = normalizeWallet(walletAddress);
-  if (!normalized) return { error: "walletAddress required" };
-  if (!seat.walletAddress || seat.walletAddress !== normalized) {
-    return { error: "Seat is owned by a different wallet" };
-  }
-  return { ok: true, seat };
-}
-
 function requireLoginWallet(req, walletAddress) {
   const normalized = normalizeWallet(walletAddress);
   if (!normalized) return { error: "walletAddress required" };
@@ -418,69 +294,162 @@ function coerceSerializedValue(value) {
   return current;
 }
 
-function parseAmountWei(value) {
+function parseWeiString(value, { allowZero = false } = {}) {
   value = coerceSerializedValue(value);
-  if (typeof value === "bigint") {
-    if (value <= 0n) return { error: "amountWei must be positive" };
-    return { ok: true, amountWei: value };
+  if (typeof value === "number") value = String(value);
+  if (typeof value !== "string" || !/^\d+$/.test(value)) {
+    return { error: "amountWei must be a string integer" };
   }
-  if (typeof value === "number") {
-    value = String(value);
-  }
-  if (typeof value !== "string") return { error: "amountWei required" };
-  try {
-    const parsed = BigInt(value);
-    if (parsed <= 0n) return { error: "amountWei must be positive" };
-    return { ok: true, amountWei: parsed };
-  } catch {
-    return { error: "amountWei invalid" };
-  }
-}
-
-async function getActiveBlackjackSession(walletAddress) {
-  return prisma.blackjackSession.findFirst({ where: { walletAddress, status: "active" } });
-}
-
-async function getPendingBlackjackSession(walletAddress) {
-  return prisma.blackjackSession.findFirst({ where: { walletAddress, status: "pending" } });
-}
-
-function syncSeatBankroll(seat, bankrollWei) {
-  seat.bankroll = Number(formatUnits(bankrollWei, DYNW_DECIMALS));
+  const amountWei = BigInt(value);
+  if (!allowZero && amountWei <= 0n) return { error: "amountWei must be positive" };
+  return { ok: true, amountWei };
 }
 
 function serializeBlackjackSession(session) {
   if (!session) return null;
   return {
-    ...session,
-    buyInWei: session.buyInWei.toString(),
-    bankrollWei: session.bankrollWei.toString(),
-    committedWei: session.committedWei.toString(),
-    netPnlWei: session.netPnlWei.toString(),
+    id: session.id,
+    walletAddress: session.walletAddress,
+    seatId: session.seatId,
+    buyInAmountWei: session.buyInAmountWei,
+    bankrollWei: session.bankrollWei,
+    status: session.status,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
   };
 }
 
-function serializeBlackjackSettlement(settlement) {
-  if (!settlement) return null;
+function serializeBlackjackHand(hand) {
+  if (!hand) return null;
   return {
-    ...settlement,
-    netPnlWei: settlement.netPnlWei.toString(),
+    id: hand.id,
+    sessionId: hand.sessionId,
+    betAmountWei: hand.betAmountWei,
+    stateJson: hand.stateJson,
+    outcome: hand.outcome,
+    payoutWei: hand.payoutWei,
+    createdAt: hand.createdAt,
   };
 }
 
-function findAvailableSeat(preferredSeatId = null) {
-  if (Number.isInteger(preferredSeatId)) {
-    const seat = blackjackState.seats.find((entry) => entry.id === preferredSeatId);
-    if (seat && !seat.joined) return seat;
+function buildShoe(decks = BLACKJACK_DECKS) {
+  const suits = ["♠", "♥", "♦", "♣"];
+  const ranks = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"];
+  const cards = [];
+  for (let d = 0; d < decks; d += 1) {
+    for (const suit of suits) {
+      for (const rank of ranks) {
+        let value = Number(rank);
+        if (Number.isNaN(value)) {
+          value = rank === "A" ? 11 : 10;
+        }
+        cards.push({ rank, suit, value });
+      }
+    }
   }
-  return blackjackState.seats.find((seat) => !seat.joined) || null;
+  return cards;
 }
 
-async function fetchVaultBalance(walletAddress) {
+function drawRandomCard(shoe) {
+  const index = crypto.randomInt(0, shoe.length);
+  const [card] = shoe.splice(index, 1);
+  return card;
+}
+
+function getHandTotals(cards) {
+  let total = 0;
+  let aces = 0;
+  for (const card of cards) {
+    total += card.value;
+    if (card.rank === "A") aces += 1;
+  }
+  while (total > 21 && aces > 0) {
+    total -= 10;
+    aces -= 1;
+  }
+  const soft =
+    cards.some((card) => card.rank === "A") &&
+    total <= 21 &&
+    cards.reduce((sum, c) => sum + c.value, 0) !== total;
+  return { total, soft };
+}
+
+function isBlackjack(cards) {
+  return cards.length === 2 && getHandTotals(cards).total === 21;
+}
+
+function shouldDealerHit(cards) {
+  const totals = getHandTotals(cards);
+  if (totals.total < 17) return true;
+  if (totals.total === 17 && totals.soft) return true;
+  return false;
+}
+
+function handStatusFromCards(cards) {
+  const totals = getHandTotals(cards);
+  if (totals.total > 21) return "bust";
+  if (isBlackjack(cards)) return "blackjack";
+  return "playing";
+}
+
+function canSplitHand(handState, tableState) {
+  if (tableState.hands.length !== 1) return false;
+  if (handState.cards.length !== 2) return false;
+  return handState.cards[0].rank === handState.cards[1].rank;
+}
+
+function canDoubleHand(handState) {
+  return handState.cards.length === 2 && handState.status === "playing";
+}
+
+function canSurrenderHand(handState, tableState) {
+  return tableState.hands.length === 1 && handState.cards.length === 2 && handState.status === "playing";
+}
+
+function settleHandState(tableState) {
+  const dealer = [...tableState.dealer];
+  while (shouldDealerHit(dealer) && tableState.shoe.length > 0) {
+    dealer.push(drawRandomCard(tableState.shoe));
+  }
+  tableState.dealer = dealer;
+  tableState.phase = "settled";
+  const dealerTotals = getHandTotals(dealer);
+  const results = tableState.hands.map((hand) => {
+    if (hand.status === "surrendered") {
+      return { outcome: "SURRENDER", payoutDelta: -(BigInt(hand.betWei) / 2n) };
+    }
+    const totals = getHandTotals(hand.cards);
+    if (totals.total > 21) {
+      return { outcome: "BUST", payoutDelta: -BigInt(hand.betWei) };
+    }
+    if (hand.status === "blackjack" && !isBlackjack(dealer)) {
+      const payout = (BigInt(hand.betWei) * 3n) / 2n;
+      return { outcome: "BLACKJACK", payoutDelta: payout };
+    }
+    if (dealerTotals.total > 21) {
+      return { outcome: "PLAYER_WIN", payoutDelta: BigInt(hand.betWei) };
+    }
+    if (totals.total > dealerTotals.total) {
+      return { outcome: "PLAYER_WIN", payoutDelta: BigInt(hand.betWei) };
+    }
+    if (totals.total < dealerTotals.total) {
+      return { outcome: "DEALER_WIN", payoutDelta: -BigInt(hand.betWei) };
+    }
+    return { outcome: "PUSH", payoutDelta: 0n };
+  });
+  const payoutWei = results.reduce((sum, entry) => sum + entry.payoutDelta, 0n);
+  return { tableState, payoutWei, results };
+}
+
+async function fetchVaultBalances(walletAddress) {
   if (!vaultReadContract) {
     throw new Error("VAULT_LEDGER_ADDRESS is not configured");
   }
-  return vaultReadContract.balances(walletAddress, DYNW_TOKEN_ADDRESS);
+  const [balance, locked] = await Promise.all([
+    vaultReadContract.balances(walletAddress, DYNW_TOKEN_ADDRESS),
+    vaultReadContract.lockedBalances(walletAddress, DYNW_TOKEN_ADDRESS),
+  ]);
+  return { balance: BigInt(balance), locked: BigInt(locked) };
 }
 
 async function fetchVaultBetStake(betId, walletAddress) {
@@ -537,20 +506,20 @@ app.post("/api/auth/verify", async (req, res) => {
 });
 
 
-app.get("/api/blackjack/state", (_req, res) => {
-  res.json({ ok: true, state: blackjackState });
-});
-
 app.get("/api/blackjack/session", requireAuth, async (req, res) => {
   try {
     const walletAddress = normalizeWallet(req.user?.loginAddress);
     if (!walletAddress) return res.status(403).json({ error: "walletAddress required" });
-    const session =
-      (await prisma.blackjackSession.findFirst({ where: { walletAddress, status: "active" } })) ||
-      (await prisma.blackjackSession.findFirst({ where: { walletAddress, status: "pending" } }));
-    if (!session) return res.json({ ok: true, session: null });
-    const betId = buildBlackjackSessionBetId(session.id);
-    res.json({ ok: true, session: serializeBlackjackSession(session), betId });
+    const session = await prisma.blackjackSession.findFirst({
+      where: { walletAddress, status: "OPEN" },
+      orderBy: { createdAt: "desc" },
+    });
+    if (!session) return res.json({ ok: true, session: null, hand: null });
+    const hand = await prisma.blackjackHand.findFirst({
+      where: { sessionId: session.id, outcome: "PENDING" },
+      orderBy: { createdAt: "desc" },
+    });
+    res.json({ ok: true, session: serializeBlackjackSession(session), hand: serializeBlackjackHand(hand) });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
@@ -561,8 +530,15 @@ app.get("/api/blackjack/balance", requireAuth, async (req, res) => {
     const walletAddress = normalizeWallet(req.query.wallet);
     const authCheck = requireLoginWallet(req, walletAddress);
     if (authCheck.error) return res.status(403).json({ error: authCheck.error });
-    const balance = await fetchVaultBalance(authCheck.walletAddress);
-    res.json({ ok: true, wallet: authCheck.walletAddress, balance: balance.toString() });
+    const { balance, locked } = await fetchVaultBalances(authCheck.walletAddress);
+    const available = balance - locked;
+    res.json({
+      ok: true,
+      wallet: authCheck.walletAddress,
+      balance: balance.toString(),
+      locked: locked.toString(),
+      available: available.toString(),
+    });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
@@ -570,157 +546,151 @@ app.get("/api/blackjack/balance", requireAuth, async (req, res) => {
 
 app.post("/api/blackjack/buyin", requireAuth, async (req, res) => {
   try {
-    const amountCheck = parseAmountWei(req.body?.amountWei);
+    const amountCheck = parseWeiString(req.body?.amountWei);
     if (amountCheck.error) return res.status(400).json({ error: amountCheck.error });
-    const desiredAmountWei = amountCheck.amountWei;
-    const authCheck = requireLoginWallet(req, req.user?.loginAddress);
-    if (authCheck.error) return res.status(403).json({ error: authCheck.error });
-    const walletAddress = authCheck.walletAddress;
-    let session = await getActiveBlackjackSession(walletAddress);
-    if (!session) session = await getPendingBlackjackSession(walletAddress);
-
-    const requestedSeatId = Number.isInteger(req.body?.seatId) ? Number(req.body.seatId) : null;
-    let seat = null;
-    if (session) {
-      if (requestedSeatId !== null && requestedSeatId !== session.seatId) {
-        return res.status(400).json({ error: "Session already assigned to another seat" });
-      }
-      seat = blackjackState.seats.find((entry) => entry.id === session.seatId) || null;
-      if (seat && seat.joined && seat.walletAddress !== walletAddress) {
-        return res.status(400).json({ error: "Seat already occupied" });
-      }
-      if (!seat) {
-        return res.status(400).json({ error: "Seat not found for existing session" });
-      }
-    } else {
-      seat = findAvailableSeat(requestedSeatId);
-      if (!seat) return res.status(400).json({ error: "No available seats" });
+    const seatId = Number(req.body?.seatId);
+    if (!Number.isInteger(seatId) || seatId < 0 || seatId > 4) {
+      return res.status(400).json({ error: "seatId must be between 0 and 4" });
     }
-
-    let vaultBalance = null;
+    const walletAddress = normalizeWallet(req.user?.loginAddress);
+    if (!walletAddress) return res.status(403).json({ error: "walletAddress required" });
+    let availableWei = null;
     try {
-      vaultBalance = await fetchVaultBalance(walletAddress);
+      const { balance, locked } = await fetchVaultBalances(walletAddress);
+      availableWei = balance - locked;
     } catch (e) {
       console.warn("Vault balance unavailable for buy-in:", e);
     }
-
-    if (!session) {
-      if (vaultBalance !== null && desiredAmountWei > BigInt(vaultBalance)) {
-        return res.status(400).json({ error: "Buy-in exceeds vault balance" });
-      }
-      session = await prisma.blackjackSession.create({
-        data: {
-          walletAddress,
-          seatId: seat.id,
-          status: "pending",
-          buyInWei: desiredAmountWei,
-          bankrollWei: 0n,
-          committedWei: 0n,
-          netPnlWei: 0n,
-        },
-      });
-    }
-    const betId = buildBlackjackSessionBetId(session.id);
-    let stakeWei = 0n;
-    let stakeOk = true;
-    try {
-      const stake = await fetchVaultBetStake(betId, walletAddress);
-      stakeWei = BigInt(stake);
-    } catch (e) {
-      stakeOk = false;
-      console.warn("Vault stake unavailable for buy-in:", e);
-      stakeWei = desiredAmountWei;
-    }
-    const availableBalanceWei =
-      vaultBalance !== null ? BigInt(vaultBalance) + stakeWei : desiredAmountWei;
-    if (desiredAmountWei > availableBalanceWei) {
+    if (availableWei !== null && amountCheck.amountWei > availableWei) {
       return res.status(400).json({ error: "Buy-in exceeds vault balance" });
     }
-    if (desiredAmountWei < session.buyInWei) {
-      return res.status(400).json({ error: "Buy-in cannot be decreased" });
-    }
-    const needsStake = stakeOk && stakeWei < desiredAmountWei;
-    const missingStakeWei = needsStake ? desiredAmountWei - stakeWei : 0n;
-
-    if (!seat.joined) {
-      const result = joinSeat(blackjackState, seat.id, req.body?.name, walletAddress, null);
-      if (result.error) return res.status(400).json({ error: result.error });
-    }
-    seat.walletAddress = walletAddress;
-
-    if (!needsStake) {
-      let bankrollDelta = desiredAmountWei - session.buyInWei;
-      if (session.status !== "active") {
-        bankrollDelta = desiredAmountWei;
+    const session = await prisma.$transaction(async (tx) => {
+      const existing = await tx.blackjackSession.findFirst({
+        where: { walletAddress, status: "OPEN" },
+      });
+      if (existing) {
+        throw new Error("Active blackjack session already open");
       }
-      session = await prisma.blackjackSession.update({
-        where: { id: session.id },
+      const seatTaken = await tx.blackjackSession.findFirst({
+        where: { seatId, status: "OPEN" },
+      });
+      if (seatTaken) {
+        throw new Error("Seat already occupied");
+      }
+      return tx.blackjackSession.create({
         data: {
-          status: "active",
-          buyInWei: desiredAmountWei,
-          bankrollWei: session.bankrollWei + bankrollDelta,
+          walletAddress,
+          seatId,
+          buyInAmountWei: amountCheck.amountWei.toString(),
+          bankrollWei: amountCheck.amountWei.toString(),
+          status: "OPEN",
         },
       });
-      syncSeatBankroll(seat, session.bankrollWei);
-    }
-
-    persistBlackjackUpdates();
-    return res.json({
+    });
+    const betId = buildBlackjackSessionBetId(session.id);
+    res.json({
       ok: true,
-      state: blackjackState,
       session: serializeBlackjackSession(session),
-      betId,
-      needsStake,
-      missingStakeWei: missingStakeWei.toString(),
+      lock: { sessionId: session.id, seatId: session.seatId, amountWei: session.buyInAmountWei, betId },
     });
   } catch (e) {
+    const message = String(e?.message || e);
+    if (message.includes("Active blackjack session already open") || message.includes("Seat already occupied")) {
+      return res.status(400).json({ error: message });
+    }
     res.status(500).json({ error: String(e) });
   }
 });
 
 app.post("/api/blackjack/deal", requireAuth, async (req, res) => {
   try {
-    const amountCheck = parseAmountWei(req.body?.amountWei);
+    const amountCheck = parseWeiString(req.body?.betAmountWei);
     if (amountCheck.error) return res.status(400).json({ error: amountCheck.error });
-    const wagerWei = amountCheck.amountWei;
-    const authCheck = requireLoginWallet(req, req.user?.loginAddress);
-    if (authCheck.error) return res.status(403).json({ error: authCheck.error });
-    const walletAddress = authCheck.walletAddress;
-    const session = await getActiveBlackjackSession(walletAddress);
-    if (!session) return res.status(400).json({ error: "No active blackjack session" });
-    if (wagerWei > session.bankrollWei) {
-      return res.status(400).json({ error: "Wager exceeds table bankroll" });
-    }
-    const minBetWei = parseUnits(String(BLACKJACK_MIN_BET), DYNW_DECIMALS);
-    if (wagerWei < minBetWei) {
+    if (amountCheck.amountWei < BLACKJACK_TABLE_MIN_BET_WEI) {
       return res.status(400).json({ error: "Wager below table minimum" });
     }
-    if (blackjackState.phase === "player" || blackjackState.phase === "dealer") {
-      return res.status(400).json({ error: "Round already in progress" });
-    }
-    const seat = blackjackState.seats.find((entry) => entry.id === session.seatId);
-    if (!seat || !seat.joined || seat.walletAddress !== walletAddress) {
-      return res.status(400).json({ error: "Seat not assigned to this session" });
-    }
-    const wagerAmount = Number(formatUnits(wagerWei, DYNW_DECIMALS));
-    seat.bet = Math.max(BLACKJACK_MIN_BET, wagerAmount);
-    seat.pendingBetAmount = wagerAmount;
-    seat.pendingBetAmountWei = wagerWei.toString();
-    seat.pendingBetRoundId = blackjackState.roundId;
-    seat.readyForNextRound = true;
-    const updatedSession = await prisma.blackjackSession.update({
-      where: { id: session.id },
-      data: {
-        bankrollWei: session.bankrollWei - wagerWei,
-        committedWei: session.committedWei + wagerWei,
-      },
+    const walletAddress = normalizeWallet(req.user?.loginAddress);
+    if (!walletAddress) return res.status(403).json({ error: "walletAddress required" });
+    const session = await prisma.blackjackSession.findFirst({
+      where: { walletAddress, status: "OPEN" },
+      orderBy: { createdAt: "desc" },
     });
-    syncSeatBankroll(seat, updatedSession.bankrollWei);
-    if (tryStartNextRound()) {
-      await applyBlackjackRoundResults();
+    if (!session) return res.status(400).json({ error: "No active blackjack session" });
+    const bankrollWei = BigInt(session.bankrollWei);
+    if (amountCheck.amountWei > bankrollWei) {
+      return res.status(400).json({ error: "Wager exceeds table bankroll" });
     }
-    persistBlackjackUpdates();
-    return res.json({ ok: true, state: blackjackState, session: serializeBlackjackSession(updatedSession) });
+    const pendingHand = await prisma.blackjackHand.findFirst({
+      where: { sessionId: session.id, outcome: "PENDING" },
+      orderBy: { createdAt: "desc" },
+    });
+    if (pendingHand) {
+      return res.status(400).json({ error: "Finish the current hand before dealing" });
+    }
+    const lastHand = await prisma.blackjackHand.findFirst({
+      where: { sessionId: session.id },
+      orderBy: { createdAt: "desc" },
+    });
+    const previousShoe = Array.isArray(lastHand?.stateJson?.shoe) ? [...lastHand.stateJson.shoe] : [];
+    const shoe = previousShoe.length >= 52 ? previousShoe : buildShoe();
+    const playerCards = [drawRandomCard(shoe), drawRandomCard(shoe)];
+    const dealerCards = [drawRandomCard(shoe), drawRandomCard(shoe)];
+    const playerStatus = handStatusFromCards(playerCards);
+    const tableState = {
+      shoe,
+      dealer: dealerCards,
+      hands: [
+        {
+          cards: playerCards,
+          status: playerStatus,
+          betWei: amountCheck.amountWei.toString(),
+        },
+      ],
+      activeHandIndex: 0,
+      phase: playerStatus === "blackjack" || isBlackjack(dealerCards) ? "dealer" : "player",
+    };
+    let payoutWei = 0n;
+    let outcome = "PENDING";
+    if (tableState.phase !== "player") {
+      const resolved = settleHandState(tableState);
+      payoutWei = resolved.payoutWei;
+      const overall = resolved.results;
+      const allBust = overall.every((entry) => entry.outcome === "BUST");
+      if (overall.length === 1 && overall[0].outcome === "SURRENDER") {
+        outcome = "SURRENDER";
+      } else if (overall.length === 1 && overall[0].outcome === "BLACKJACK") {
+        outcome = "BLACKJACK";
+      } else if (allBust) {
+        outcome = "BUST";
+      } else if (payoutWei === 0n) {
+        outcome = "PUSH";
+      } else if (payoutWei > 0n) {
+        outcome = "PLAYER_WIN";
+      } else {
+        outcome = "DEALER_WIN";
+      }
+    }
+    const result = await prisma.$transaction(async (tx) => {
+      const hand = await tx.blackjackHand.create({
+        data: {
+          sessionId: session.id,
+          betAmountWei: amountCheck.amountWei.toString(),
+          stateJson: tableState,
+          outcome,
+          payoutWei: payoutWei.toString(),
+        },
+      });
+      let updatedSession = session;
+      if (outcome !== "PENDING") {
+        const updatedBankroll = (BigInt(session.bankrollWei) + payoutWei).toString();
+        updatedSession = await tx.blackjackSession.update({
+          where: { id: session.id },
+          data: { bankrollWei: updatedBankroll },
+        });
+      }
+      return { hand, session: updatedSession };
+    });
+    res.json({ ok: true, session: serializeBlackjackSession(result.session), hand: serializeBlackjackHand(result.hand) });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
@@ -729,229 +699,202 @@ app.post("/api/blackjack/deal", requireAuth, async (req, res) => {
 app.post("/api/blackjack/action", requireAuth, async (req, res) => {
   try {
     const action = String(req.body?.action || "").toLowerCase();
-    if (!["hit", "stand", "double", "split"].includes(action)) {
+    if (!["hit", "stand", "double", "split", "surrender"].includes(action)) {
       return res.status(400).json({ error: "action invalid" });
     }
-    const authCheck = requireLoginWallet(req, req.user?.loginAddress);
-    if (authCheck.error) return res.status(403).json({ error: authCheck.error });
-    const walletAddress = authCheck.walletAddress;
-    const session = await getActiveBlackjackSession(walletAddress);
+    const walletAddress = normalizeWallet(req.user?.loginAddress);
+    if (!walletAddress) return res.status(403).json({ error: "walletAddress required" });
+    const session = await prisma.blackjackSession.findFirst({
+      where: { walletAddress, status: "OPEN" },
+      orderBy: { createdAt: "desc" },
+    });
     if (!session) return res.status(400).json({ error: "No active blackjack session" });
-    const seat = blackjackState.seats.find((entry) => entry.id === session.seatId);
-    if (!seat || !seat.joined || seat.walletAddress !== walletAddress) {
-      return res.status(400).json({ error: "Seat not assigned to this session" });
+    const hand = await prisma.blackjackHand.findFirst({
+      where: { sessionId: session.id, outcome: "PENDING" },
+      orderBy: { createdAt: "desc" },
+    });
+    if (!hand || !hand.stateJson) {
+      return res.status(400).json({ error: "No active hand" });
     }
-    if (action === "hit") {
-      const result = hit(blackjackState, seat.id);
-      if (result.error) return res.status(400).json({ error: result.error });
+    const tableState = hand.stateJson;
+    if (!Array.isArray(tableState.hands) || tableState.hands.length === 0) {
+      return res.status(400).json({ error: "Hand state invalid" });
+    }
+    const bankrollWei = BigInt(session.bankrollWei);
+    const activeIndex = Number.isInteger(tableState.activeHandIndex) ? tableState.activeHandIndex : 0;
+    const activeHand = tableState.hands[activeIndex];
+    if (!activeHand || activeHand.status !== "playing") {
+      return res.status(400).json({ error: "No playable hand" });
+    }
+
+    if (action === "split") {
+      if (!canSplitHand(activeHand, tableState)) {
+        return res.status(400).json({ error: "Split not allowed" });
+      }
+      const baseBetWei = BigInt(activeHand.betWei);
+      const currentTotalWei = tableState.hands.reduce((sum, entry) => sum + BigInt(entry.betWei), 0n);
+      const nextTotalWei = currentTotalWei + baseBetWei;
+      if (nextTotalWei > bankrollWei) {
+        return res.status(400).json({ error: "Insufficient bankroll for split" });
+      }
+      const leftCard = activeHand.cards[0];
+      const rightCard = activeHand.cards[1];
+      const newHands = [
+        { cards: [leftCard], status: "playing", betWei: activeHand.betWei, isSplit: true },
+        { cards: [rightCard], status: "playing", betWei: activeHand.betWei, isSplit: true },
+      ];
+      tableState.hands = newHands;
+      tableState.activeHandIndex = 0;
+      for (const handState of tableState.hands) {
+        if (tableState.shoe.length === 0) break;
+        handState.cards.push(drawRandomCard(tableState.shoe));
+        handState.status = handStatusFromCards(handState.cards);
+      }
+    } else if (action === "double") {
+      if (!canDoubleHand(activeHand)) {
+        return res.status(400).json({ error: "Double not allowed" });
+      }
+      const currentTotalWei = tableState.hands.reduce((sum, entry) => sum + BigInt(entry.betWei), 0n);
+      const baseBetWei = BigInt(activeHand.betWei);
+      const nextTotalWei = currentTotalWei + baseBetWei;
+      if (nextTotalWei > bankrollWei) {
+        return res.status(400).json({ error: "Insufficient bankroll for double" });
+      }
+      const doubled = baseBetWei * 2n;
+      activeHand.betWei = doubled.toString();
+      if (tableState.shoe.length === 0) {
+        return res.status(400).json({ error: "Shoe is empty" });
+      }
+      activeHand.cards.push(drawRandomCard(tableState.shoe));
+      activeHand.status = handStatusFromCards(activeHand.cards);
+      if (activeHand.status === "playing") {
+        activeHand.status = "stood";
+      }
+    } else if (action === "surrender") {
+      if (!canSurrenderHand(activeHand, tableState)) {
+        return res.status(400).json({ error: "Surrender not allowed" });
+      }
+      activeHand.status = "surrendered";
+    } else if (action === "hit") {
+      if (tableState.shoe.length === 0) {
+        return res.status(400).json({ error: "Shoe is empty" });
+      }
+      activeHand.cards.push(drawRandomCard(tableState.shoe));
+      activeHand.status = handStatusFromCards(activeHand.cards);
     } else if (action === "stand") {
-      const result = stand(blackjackState, seat.id);
-      if (result.error) return res.status(400).json({ error: result.error });
+      activeHand.status = "stood";
+    }
+
+    let nextIndex = tableState.activeHandIndex;
+    while (nextIndex < tableState.hands.length && tableState.hands[nextIndex].status !== "playing") {
+      nextIndex += 1;
+    }
+    if (nextIndex >= tableState.hands.length) {
+      tableState.phase = "dealer";
     } else {
-      const activeHandIndex = blackjackState.activeHand ?? seat.activeHand ?? 0;
-      const currentBet = seat.bets[activeHandIndex] ?? seat.bet;
-      const extraBetWei = parseUnits(String(currentBet), DYNW_DECIMALS);
-      if (req.body?.amountWei) {
-        const amountCheck = parseAmountWei(req.body.amountWei);
-        if (amountCheck.error) return res.status(400).json({ error: amountCheck.error });
-        if (amountCheck.amountWei !== extraBetWei) {
-          return res.status(400).json({ error: "amountWei mismatch" });
-        }
-      }
-      if (extraBetWei > session.bankrollWei) {
-        return res.status(400).json({ error: "Insufficient table bankroll" });
-      }
-      if (action === "double") {
-        const result = doubleDown(blackjackState, seat.id);
-        if (result.error) return res.status(400).json({ error: result.error });
+      tableState.activeHandIndex = nextIndex;
+    }
+
+    let payoutWei = 0n;
+    let outcome = "PENDING";
+    if (tableState.phase === "dealer") {
+      const resolved = settleHandState(tableState);
+      payoutWei = resolved.payoutWei;
+      const overall = resolved.results;
+      const allBust = overall.every((entry) => entry.outcome === "BUST");
+      if (overall.length === 1 && overall[0].outcome === "SURRENDER") {
+        outcome = "SURRENDER";
+      } else if (overall.length === 1 && overall[0].outcome === "BLACKJACK") {
+        outcome = "BLACKJACK";
+      } else if (allBust) {
+        outcome = "BUST";
+      } else if (payoutWei === 0n) {
+        outcome = "PUSH";
+      } else if (payoutWei > 0n) {
+        outcome = "PLAYER_WIN";
       } else {
-        const result = splitHand(blackjackState, seat.id);
-        if (result.error) return res.status(400).json({ error: result.error });
+        outcome = "DEALER_WIN";
       }
-      const updatedSession = await prisma.blackjackSession.update({
-        where: { id: session.id },
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const updatedHand = await tx.blackjackHand.update({
+        where: { id: hand.id },
         data: {
-          bankrollWei: session.bankrollWei - extraBetWei,
-          committedWei: session.committedWei + extraBetWei,
+          stateJson: tableState,
+          outcome,
+          payoutWei: payoutWei.toString(),
         },
       });
-      syncSeatBankroll(seat, updatedSession.bankrollWei);
-    }
-    await applyBlackjackRoundResults();
-    persistBlackjackUpdates();
-    return res.json({ ok: true, state: blackjackState });
+      let updatedSession = session;
+      if (outcome !== "PENDING") {
+        const updatedBankroll = (BigInt(session.bankrollWei) + payoutWei).toString();
+        updatedSession = await tx.blackjackSession.update({
+          where: { id: session.id },
+          data: { bankrollWei: updatedBankroll },
+        });
+      }
+      return { hand: updatedHand, session: updatedSession };
+    });
+    res.json({ ok: true, session: serializeBlackjackSession(result.session), hand: serializeBlackjackHand(result.hand) });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
-});
-
-app.post("/api/blackjack/join", requireAuth, (req, res) => {
-  const seatId = Number(req.body?.seatId);
-  if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
-  const walletAddress = normalizeWallet(req.user?.loginAddress);
-  const result = joinSeat(blackjackState, seatId, req.body?.name, walletAddress, null);
-  if (result.error) return res.status(400).json({ error: result.error });
-  queueNextRoundIfNeeded();
-  persistBlackjackUpdates();
-  return res.json({ ok: true, state: blackjackState });
 });
 
 app.post("/api/blackjack/leave", requireAuth, async (req, res) => {
   try {
-    const authCheck = requireLoginWallet(req, req.user?.loginAddress);
-    if (authCheck.error) return res.status(403).json({ error: authCheck.error });
-    const walletAddress = authCheck.walletAddress;
-    const session = await getActiveBlackjackSession(walletAddress);
-    const pendingSession = session || (await getPendingBlackjackSession(walletAddress));
-    if (!pendingSession) return res.status(400).json({ error: "No blackjack session to close" });
-    const seat = blackjackState.seats.find((entry) => entry.id === pendingSession.seatId);
-    if (seat?.status === "playing") {
+    const walletAddress = normalizeWallet(req.user?.loginAddress);
+    if (!walletAddress) return res.status(403).json({ error: "walletAddress required" });
+    const session = await prisma.blackjackSession.findFirst({
+      where: { walletAddress, status: "OPEN" },
+      orderBy: { createdAt: "desc" },
+    });
+    if (!session) return res.status(400).json({ error: "No open blackjack session" });
+    const pendingHand = await prisma.blackjackHand.findFirst({
+      where: { sessionId: session.id, outcome: "PENDING" },
+    });
+    if (pendingHand) {
       return res.status(400).json({ error: "Finish the current hand before leaving" });
     }
-    if (pendingSession.status === "pending") {
-      await prisma.blackjackSession.update({
-        where: { id: pendingSession.id },
-        data: { status: "cancelled" },
-      });
-      if (seat) leaveSeat(blackjackState, seat.id);
-      persistBlackjackUpdates();
-      return res.json({ ok: true, state: blackjackState, session: null });
-    }
-    const existingSettlement = await prisma.blackjackSettlement.findUnique({
-      where: { sessionId: pendingSession.id },
-    });
-    if (existingSettlement) {
-      return res.json({ ok: true, settlement: serializeBlackjackSettlement(existingSettlement), state: blackjackState });
-    }
-    const betId = buildBlackjackSessionBetId(pendingSession.id);
+    const betId = buildBlackjackSessionBetId(session.id);
+    const buyInWei = BigInt(session.buyInAmountWei);
+    const bankrollWei = BigInt(session.bankrollWei);
+    const netDeltaWei = bankrollWei - buyInWei;
+    let txHash = "skipped";
     if (!vaultContract || !operatorSigner) {
-      const fallbackSettlement = await prisma.blackjackSettlement.create({
-        data: {
-          sessionId: pendingSession.id,
-          betId,
-          txHash: "skipped",
-          netPnlWei: pendingSession.netPnlWei,
-          status: "skipped",
-        },
-      });
-      await prisma.blackjackSession.update({
-        where: { id: pendingSession.id },
-        data: { status: "settled", bankrollWei: 0n, committedWei: 0n },
-      });
-      if (seat) leaveSeat(blackjackState, seat.id);
-      persistBlackjackUpdates();
-      return res.json({
-        ok: true,
-        settlement: serializeBlackjackSettlement(fallbackSettlement),
-        state: blackjackState,
-        warning: "Vault not configured; session closed without on-chain settlement.",
-      });
-    }
-    let stakeWei = 0n;
-    try {
+      console.warn("Vault not configured for blackjack settlement.");
+    } else {
       const stake = await fetchVaultBetStake(betId, walletAddress);
-      stakeWei = BigInt(stake);
-    } catch (e) {
-      console.warn("Vault stake unavailable for leave:", e);
-      stakeWei = 0n;
+      const stakeWei = BigInt(stake);
+      if (stakeWei < buyInWei) {
+        return res.status(400).json({ error: "Vault stake does not match buy-in" });
+      }
+      const payoutWei = bankrollWei < 0n ? 0n : bankrollWei;
+      if (netDeltaWei > 0n) {
+        await vaultContract.placeBet(betId, DYNW_TOKEN_ADDRESS, netDeltaWei);
+      }
+      const tx = await vaultContract.settleBet(betId, [walletAddress], [payoutWei]);
+      await tx.wait();
+      txHash = tx.hash;
     }
-    if (stakeWei < pendingSession.buyInWei) {
-      const fallbackSettlement = await prisma.blackjackSettlement.create({
-        data: {
-          sessionId: pendingSession.id,
-          betId,
-          txHash: "skipped",
-          netPnlWei: pendingSession.netPnlWei,
-          status: "skipped",
-        },
-      });
-      await prisma.blackjackSession.update({
-        where: { id: pendingSession.id },
-        data: { status: "settled", bankrollWei: 0n, committedWei: 0n },
-      });
-      if (seat) leaveSeat(blackjackState, seat.id);
-      persistBlackjackUpdates();
-      return res.json({
-        ok: true,
-        settlement: serializeBlackjackSettlement(fallbackSettlement),
-        state: blackjackState,
-        warning: "Vault stake unavailable; session closed without on-chain settlement.",
-      });
-    }
-    const netPnlWei = pendingSession.netPnlWei;
-    let payoutWei = pendingSession.buyInWei + netPnlWei;
-    if (payoutWei < 0n) payoutWei = 0n;
-    const settlementRecord = await prisma.blackjackSettlement.create({
-      data: {
-        sessionId: pendingSession.id,
+    const closedSession = await prisma.blackjackSession.update({
+      where: { id: session.id },
+      data: { status: "CLOSED" },
+    });
+    res.json({
+      ok: true,
+      session: serializeBlackjackSession(closedSession),
+      settlement: {
         betId,
-        txHash: "pending",
-        netPnlWei,
-        status: "pending",
+        txHash,
+        netDeltaWei: netDeltaWei.toString(),
+        payoutWei: bankrollWei.toString(),
       },
     });
-    let txHash = "";
-    try {
-      if (netPnlWei > 0n) {
-        await vaultContract.placeBet(betId, DYNW_TOKEN_ADDRESS, netPnlWei);
-        const tx = await vaultContract.settleBet(
-          betId,
-          [walletAddress, operatorSigner.address],
-          [payoutWei, 0n]
-        );
-        await tx.wait();
-        txHash = tx.hash;
-      } else {
-        const tx = await vaultContract.settleBet(betId, [walletAddress], [payoutWei]);
-        await tx.wait();
-        txHash = tx.hash;
-      }
-      const updatedSettlement = await prisma.blackjackSettlement.update({
-        where: { id: settlementRecord.id },
-        data: { txHash, status: "confirmed" },
-      });
-      await prisma.blackjackSession.update({
-        where: { id: pendingSession.id },
-        data: { status: "settled", bankrollWei: 0n, committedWei: 0n },
-      });
-      if (seat) leaveSeat(blackjackState, seat.id);
-      persistBlackjackUpdates();
-      return res.json({ ok: true, settlement: serializeBlackjackSettlement(updatedSettlement), state: blackjackState });
-    } catch (e) {
-      await prisma.blackjackSettlement.update({
-        where: { id: settlementRecord.id },
-        data: { status: "failed" },
-      });
-      return res.status(500).json({ error: String(e) });
-    }
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
-});
-
-app.post("/api/blackjack/seat", requireAuth, (req, res) => {
-  const seatId = Number(req.body?.seatId);
-  if (!Number.isInteger(seatId)) return res.status(400).json({ error: "seatId required" });
-  const ownership = requireSeatOwner(seatId, req.user?.loginAddress);
-  if (ownership.error) return res.status(403).json({ error: ownership.error });
-  const result = updateSeat(blackjackState, seatId, req.body || {});
-  if (result.error) return res.status(400).json({ error: result.error });
-  persistBlackjackUpdates();
-  return res.json({ ok: true, state: blackjackState });
-});
-
-app.post("/api/blackjack/shuffle", (_req, res) => {
-  const result = shuffleShoe(blackjackState);
-  if (result.error) return res.status(400).json({ error: result.error });
-  persistBlackjackUpdates();
-  return res.json({ ok: true, state: blackjackState });
-});
-
-app.post("/api/blackjack/reset", (_req, res) => {
-  const result = resetRound(blackjackState);
-  if (result.error) return res.status(400).json({ error: result.error });
-  persistBlackjackUpdates();
-  return res.json({ ok: true, state: blackjackState });
 });
 
 app.get("/api/masterpiece/:id", async (req, res) => {
@@ -1248,25 +1191,6 @@ app.post("/api/settle/:masterpieceId", async (req, res) => {
     res.status(500).json({ error: String(e) });
   }
 });
-
-setInterval(() => {
-  let changed = false;
-  const now = Date.now();
-  if (blackjackState.phase === "player" && blackjackState.turnExpiresAt && now >= blackjackState.turnExpiresAt) {
-    const result = timeoutStand(blackjackState);
-    if (result.ok) changed = true;
-  }
-  if (blackjackState.phase === "idle" || blackjackState.phase === "settled") {
-    if (queueNextRoundIfNeeded()) changed = true;
-    if (tryStartNextRound()) changed = true;
-  }
-  if (blackjackState.phase === "settled") {
-    applyBlackjackRoundResults().catch((e) => console.error("Blackjack round sync error:", e));
-  }
-  if (changed) {
-    persistBlackjackUpdates();
-  }
-}, 1000);
 
 // ---- Serve built frontend when available ----
 const distDir = path.join(__dirname, "..", "dist");
