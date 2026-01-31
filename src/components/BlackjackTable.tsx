@@ -97,6 +97,21 @@ export default function BlackjackTable({
       ? vaultBalance - vaultLocked
       : vaultBalance;
 
+  const vaultWalletAddress = loginAddress || wallet;
+  const {
+    vaultBalance: vaultBalanceWei,
+    vaultLocked: vaultLockedWei,
+    refresh: refreshVaultBalance,
+  } = useVaultLedgerBalance(
+    vaultWalletAddress,
+    walletProvider,
+  );
+
+  const availableVaultBalanceWei =
+    vaultBalanceWei !== null && vaultLockedWei !== null && vaultBalanceWei > vaultLockedWei
+      ? vaultBalanceWei - vaultLockedWei
+      : vaultBalanceWei;
+
   const refreshSession = useCallback(async () => {
     if (!isSignedIn) {
       setSession(null);
@@ -323,7 +338,9 @@ export default function BlackjackTable({
         <div className="summary-card">
           <div className="label">Vault balance</div>
           <div className="title">
-            {availableVaultWei !== null ? `${formatTokenAmount(availableVaultWei, coinDecimals)} ${coinSymbol}` : "—"}
+            {availableVaultBalanceWei !== null
+              ? `${formatTokenAmount(availableVaultBalanceWei, coinDecimals)} ${coinSymbol}`
+              : "—"}
           </div>
           <div className="subtle">Available for blackjack buy-ins.</div>
         </div>
