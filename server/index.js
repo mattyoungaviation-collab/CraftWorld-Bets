@@ -72,6 +72,7 @@ const CRASH_HOUSE_EDGE_BPS = Number(process.env.CRASH_HOUSE_EDGE_BPS ?? "200");
 const CRASH_BETTING_MS = Number(process.env.CRASH_BETTING_MS ?? "6000");
 const CRASH_COOLDOWN_MS = Number(process.env.CRASH_COOLDOWN_MS ?? "4000");
 const CRASH_RATE_LIMIT_MS = Number(process.env.CRASH_RATE_LIMIT_MS ?? "500");
+const CRAFTWORLD_APP_VERSION = process.env.CRAFTWORLD_APP_VERSION || "1.6.2";
 const ERC20_READ_ABI = [
   "function name() view returns (string)",
   "function symbol() view returns (string)",
@@ -150,8 +151,13 @@ async function fetchMasterpiece(id) {
   const r = await fetch(GRAPHQL_URL, {
     method: "POST",
     headers: {
+      accept: "*/*",
+      "accept-language": "en-US,en;q=0.9",
       "content-type": "application/json",
       authorization: `Bearer ${jwt}`,
+      origin: "https://craft-world.gg",
+      referer: "https://craft-world.gg/",
+      "x-app-version": CRAFTWORLD_APP_VERSION,
     },
     body: JSON.stringify({
       query: MASTERPIECE_QUERY,
