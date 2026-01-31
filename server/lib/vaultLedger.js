@@ -3,8 +3,11 @@ import { Contract, keccak256, toUtf8Bytes } from "ethers";
 const VAULT_LEDGER_READ_ABI = [
   "function getAvailableBalance(address token, address owner) view returns (uint256)",
   "function getLockedBalance(address token, address owner) view returns (uint256)",
+
+  // Fallback mapping getters (these are public in the Solidity contract)
   "function balances(address owner, address token) view returns (uint256)",
   "function lockedBalances(address owner, address token) view returns (uint256)",
+
   "function betStakes(bytes32 betId, address owner) view returns (uint256)",
   "function treasury() view returns (address)",
 ];
@@ -23,7 +26,7 @@ export async function safeGetLockedBalance(vaultReadContract, token, owner) {
   try {
     const locked = await vaultReadContract.getLockedBalance(token, owner);
     return BigInt(locked);
-  } catch (e) {
+  } catch {
     const locked = await vaultReadContract.lockedBalances(owner, token);
     return BigInt(locked);
   }
@@ -34,7 +37,8 @@ export async function safeGetAvailableBalance(vaultReadContract, token, owner) {
   try {
     const available = await vaultReadContract.getAvailableBalance(token, owner);
     return BigInt(available);
-  } catch (e) {
+  } catch {
+    // Fallback: balances(owner, token) - lockedBalances(owner, token)
     const [balRaw, lockedRaw] = await Promise.all([
       vaultReadContract.balances(owner, token),
       vaultReadContract.lockedBalances(owner, token),
