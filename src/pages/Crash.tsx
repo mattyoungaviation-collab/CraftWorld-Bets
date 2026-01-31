@@ -4,6 +4,7 @@ import { Contract, id } from "ethers";
 import { io } from "socket.io-client";
 import { cashoutCrash, placeCrashBet } from "../lib/apiCrash";
 import { getCrashVaultContract, CRASH_VAULT_ADDRESS } from "../lib/crashVault";
+import { getEthersSigner } from "../lib/ethersSigner";
 import { useRoninBalances } from "../lib/useRoninBalances";
 import { DYNW_TOKEN, formatUnits, parseUnits, shortAddress } from "../lib/tokens";
 import { useWallet } from "../lib/wallet";
@@ -200,8 +201,7 @@ export default function Crash() {
       if (!crashVault) throw new Error("Crash vault contract unavailable.");
       const betId = id(`crash:${state.roundNumber}`);
       const amountWei = parseUnits(String(amount), DYNW_TOKEN.decimals);
-      const browserProvider = await walletProvider.provider;
-      const signer = await browserProvider.getSigner();
+      const { signer, address } = await getEthersSigner(walletProvider);
       const erc20 = new Contract(
         DYNW_TOKEN.address,
         [
@@ -210,7 +210,7 @@ export default function Crash() {
         ],
         signer,
       );
-      const allowance = await erc20.allowance(wallet, CRASH_VAULT_ADDRESS);
+      const allowance = await erc20.allowance(address, CRASH_VAULT_ADDRESS);
       if (allowance < amountWei) {
         setToast("⏳ Approving DYNW for the Crash Vault...");
         await (await erc20.approve(CRASH_VAULT_ADDRESS, amountWei)).wait();

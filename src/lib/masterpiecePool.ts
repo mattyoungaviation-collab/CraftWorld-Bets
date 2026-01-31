@@ -1,4 +1,5 @@
 import { Contract } from "ethers";
+import { getEthersSigner } from "./ethersSigner";
 
 export const MASTERPIECE_POOL_ADDRESS =
   (import.meta.env.VITE_MASTERPIECE_POOL_ADDRESS as string | undefined) || "";
@@ -10,8 +11,7 @@ export const MASTERPIECE_POOL_ABI = [
 
 export async function getMasterpiecePoolContract(provider: any) {
   if (!provider || !MASTERPIECE_POOL_ADDRESS) return null;
-  const browserProvider = await provider.provider;
-  const signer = await browserProvider.getSigner();
+  const { signer } = await getEthersSigner(provider);
   return {
     contract: new Contract(MASTERPIECE_POOL_ADDRESS, MASTERPIECE_POOL_ABI, signer),
     address: MASTERPIECE_POOL_ADDRESS,

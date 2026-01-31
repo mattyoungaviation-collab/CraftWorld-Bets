@@ -9,6 +9,7 @@ import { useVaultLedgerBalance } from "./lib/useVaultLedgerBalance";
 import { getMasterpiecePoolContract, MASTERPIECE_POOL_ADDRESS } from "./lib/masterpiecePool";
 import { VAULT_LEDGER_ADDRESS, buildBetId, getVaultContract } from "./lib/vaultLedger";
 import { useWallet } from "./lib/wallet";
+import { getEthersSigner } from "./lib/ethersSigner";
 import "./App.css";
 
 type LeaderRow = {
@@ -1071,8 +1072,7 @@ export default function App() {
       if (!pool) {
         throw new Error("Masterpiece pool contract not available.");
       }
-      const browserProvider = await walletProvider.provider;
-      const signer = await browserProvider.getSigner();
+      const { signer, address } = await getEthersSigner(walletProvider);
       const erc20 = new Contract(
         DYNW_TOKEN.address,
         [
@@ -1081,7 +1081,7 @@ export default function App() {
         ],
         signer
       );
-      const allowance = await erc20.allowance(wallet, MASTERPIECE_POOL_ADDRESS);
+      const allowance = await erc20.allowance(address, MASTERPIECE_POOL_ADDRESS);
       if (allowance < amountRaw) {
         setToast("⏳ Approving DYNW for the Masterpiece Pool...");
         await (await erc20.approve(MASTERPIECE_POOL_ADDRESS, amountRaw)).wait();
