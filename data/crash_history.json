@@ -1,0 +1,57 @@
+[
+  {
+    "roundId": "crash-1",
+    "roundNumber": 1,
+    "commitHash": "0xa2276b7cd2abec8b6277d0606503261e163496d7d2ce62e7523a2416dd8d7867",
+    "serverSeed": "0x8c5bf09fbaca6ea8ca4107978d89249a481c9a3246682fba78fa5445fb901101",
+    "crashPoint": 1.3230441039898488,
+    "crashPointDisplay": 1.32,
+    "startedAt": "2026-01-31T20:21:12.189Z",
+    "crashedAt": "2026-01-31T20:21:24.063Z",
+    "bets": []
+  },
+  {
+    "roundId": "crash-2",
+    "roundNumber": 2,
+    "commitHash": "0x4e22870297429c46291af9ca3983465cfc324c33d25c86af8a2eec9078d995c7",
+    "serverSeed": "0xefdd08d65293ef4b279e49931cfa3d1aed311c5dfd803e84d187107d9cc4b5d2",
+    "crashPoint": 3.4021831035632597,
+    "crashPointDisplay": 3.4,
+    "startedAt": "2026-01-31T20:21:28.075Z",
+    "crashedAt": "2026-01-31T20:21:45.602Z",
+    "bets": []
+  },
+  {
+    "roundId": "crash-3",
+    "roundNumber": 3,
+    "commitHash": "0xdb81e6769215a6a9bdfa2deb85e6da4a0635334b87f4edaf3d0e40c5593c0397",
+    "serverSeed": "0x0c12fd54ac1310a56db1b7d5302378af686c170fe70844abc71d5a32fa51f209",
+    "crashPoint": 1.4148114627729491,
+    "crashPointDisplay": 1.41,
+    "startedAt": "2026-01-31T20:21:49.604Z",
+    "crashedAt": "2026-01-31T20:22:01.905Z",
+    "bets": []
+  },
+  {
+    "roundId": "crash-4",
+    "roundNumber": 4,
+    "commitHash": "0x49d7c235c9195e1d3a337efae9b231b6c09813b275fd000f3e53b2c2478555d6",
+    "serverSeed": "0x5551b6ad1abfbec801ecdc62577f822cf1170696c838905335f198b418f586df",
+    "crashPoint": 1.5044214608120217,
+    "crashPointDisplay": 1.5,
+    "startedAt": "2026-01-31T20:22:05.912Z",
+    "crashedAt": "2026-01-31T20:22:18.559Z",
+    "bets": []
+  },
+  {
+    "roundId": "crash-5",
+    "roundNumber": 5,
+    "commitHash": "0x863daf77a9f03578c7240af6cf7372d0feab41185dc50af797127c1393852741",
+    "serverSeed": "0x268265e571e551adfeb21c2f12933ec0514d77cab4bd10f907d2829d16dc4a6b",
+    "crashPoint": 21.97159366058734,
+    "crashPointDisplay": 21.97,
+    "startedAt": "2026-01-31T20:22:22.561Z",
+    "crashedAt": "2026-01-31T20:22:51.310Z",
+    "bets": []
+  }
+]
