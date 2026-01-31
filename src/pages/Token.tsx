@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import SiteFooter from "../components/SiteFooter";
+import { CRASH_VAULT_ADDRESS } from "../lib/crashVault";
+import { MASTERPIECE_POOL_ADDRESS } from "../lib/masterpiecePool";
 import { DYNW_TOKEN, VAULT_LEDGER_ADDRESS, shortAddress } from "../lib/tokens";
 import { useWallet } from "../lib/wallet";
 
@@ -53,7 +55,7 @@ export default function Token() {
         <div>
           <div className="eyebrow">DynoWager</div>
           <h1>DYNW Token</h1>
-          <div className="subtle">Contract details, vault, and wallet setup.</div>
+          <div className="subtle">Contract details, pools, and wallet setup.</div>
         </div>
         <div className="header-actions">
           <div className="price-pill">
@@ -99,6 +101,14 @@ export default function Token() {
             <div>
               <div className="label">Vault Address</div>
               <div className="static-field">{VAULT_LEDGER_ADDRESS}</div>
+            </div>
+            <div>
+              <div className="label">Masterpiece Pool</div>
+              <div className="static-field">{MASTERPIECE_POOL_ADDRESS || "—"}</div>
+            </div>
+            <div>
+              <div className="label">Crash Vault</div>
+              <div className="static-field">{CRASH_VAULT_ADDRESS || "—"}</div>
             </div>
           </div>
           <div className="actions">
