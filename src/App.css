@@ -434,16 +434,22 @@ select {
   flex-wrap: wrap;
 }
 
-.blackjack-meta {
+.blackjack-status-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 16px;
   background: #f8fafc;
   border-radius: 12px;
   padding: 12px 16px;
 }
 
-.blackjack-meta .title {
+.status-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.status-card .title {
   font-size: 18px;
   font-weight: 700;
 }
@@ -470,14 +476,14 @@ select {
   border: 1px solid #e2e8f0;
   background: #ffffff;
   padding: 12px;
-  max-height: 360px;
+  max-height: 380px;
   overflow: auto;
 }
 
 .blackjack-seats-grid {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
 }
 
 .dealer-row {
@@ -617,7 +623,7 @@ select {
   flex-direction: column;
   gap: 16px;
   position: sticky;
-  bottom: 0;
+  bottom: 12px;
   z-index: 5;
   box-shadow: 0 -6px 20px rgba(15, 23, 42, 0.08);
 }
@@ -662,6 +668,11 @@ select {
 
   .blackjack-seats-panel {
     max-height: 240px;
+  }
+
+  .blackjack-controls {
+    margin: 0 -12px -12px;
+    border-radius: 16px 16px 0 0;
   }
 }
 

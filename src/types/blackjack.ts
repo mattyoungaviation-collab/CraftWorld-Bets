@@ -18,7 +18,7 @@ export type BlackjackTableState = {
   shoe: Card[];
   hands: BlackjackHandState[];
   activeHandIndex: number;
-  phase: "player" | "dealer" | "settled";
+  phase: "player" | "dealer" | "complete";
 };
 
 export type BlackjackSession = {

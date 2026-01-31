@@ -130,7 +130,8 @@ winners will be blocked from leaving the table. The operator never transfers tok
 accounts—never withdraw user balances to arbitrary addresses.
 
 **Bet IDs:** The frontend and backend derive bet IDs as `keccak256("cw-bet:<masterpieceId>:<position>")` so all wagers
-for a single market share the same on-chain `betId`.
+for a single market share the same on-chain `betId`. Blackjack sessions use `keccak256("cw-bj:<sessionId>")` for the
+single buy-in lock and final settlement.
 
 ### Deploying the Vault Ledger to Ronin
 
@@ -200,12 +201,16 @@ Set the server environment variables for settlement and betting:
 
 ### Blackjack session API (smoke)
 
-Use a signed-in JWT (`$TOKEN`) and a wallet address (`$WALLET`) to exercise the blackjack session flow. Gameplay is
-server-authoritative and off-chain; only the buy-in and leave actions touch the VaultLedger contract.
+Use a signed-in JWT (`$TOKEN`) to exercise the blackjack session flow. Gameplay is server-authoritative and off-chain;
+only the buy-in and leave actions touch the VaultLedger contract.
 
 ```bash
 # Check your current open session (or null)
 curl -s http://localhost:3000/api/blackjack/session \\
+  -H "authorization: Bearer $TOKEN"
+
+# Check your VaultLedger balance (available + locked)
+curl -s http://localhost:3000/api/blackjack/balance \\
   -H "authorization: Bearer $TOKEN"
 
 # Buy in (server returns a betId; lock the buy-in on-chain with placeBet)

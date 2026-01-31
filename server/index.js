@@ -275,16 +275,6 @@ function addLedgerEntry(address, entry) {
   return record;
 }
 
-function requireLoginWallet(req, walletAddress) {
-  const normalized = normalizeWallet(walletAddress);
-  if (!normalized) return { error: "walletAddress required" };
-  const loginAddress = normalizeWallet(req.user?.loginAddress);
-  if (!loginAddress || normalized !== loginAddress) {
-    return { error: "walletAddress does not match signed-in wallet" };
-  }
-  return { ok: true, walletAddress: normalized };
-}
-
 function coerceSerializedValue(value) {
   let current = value;
   let depth = 0;
@@ -421,7 +411,7 @@ function settleHandState(tableState) {
     dealer.push(drawRandomCard(tableState.shoe));
   }
   tableState.dealer = dealer;
-  tableState.phase = "settled";
+  tableState.phase = "complete";
   const dealerTotals = getHandTotals(dealer);
   const results = tableState.hands.map((hand) => {
     if (hand.status === "surrendered") {
@@ -539,14 +529,13 @@ app.get("/api/blackjack/session", requireAuth, async (req, res) => {
 
 app.get("/api/blackjack/balance", requireAuth, async (req, res) => {
   try {
-    const walletAddress = normalizeWallet(req.query.wallet);
-    const authCheck = requireLoginWallet(req, walletAddress);
-    if (authCheck.error) return res.status(403).json({ error: authCheck.error });
-    const { balance, locked } = await fetchVaultBalances(authCheck.walletAddress);
+    const walletAddress = normalizeWallet(req.user?.loginAddress);
+    if (!walletAddress) return res.status(403).json({ error: "walletAddress required" });
+    const { balance, locked } = await fetchVaultBalances(walletAddress);
     const available = balance - locked;
     res.json({
       ok: true,
-      wallet: authCheck.walletAddress,
+      wallet: walletAddress,
       balance: balance.toString(),
       locked: locked.toString(),
       available: available.toString(),
@@ -566,39 +555,39 @@ app.post("/api/blackjack/buyin", requireAuth, async (req, res) => {
     }
     const walletAddress = normalizeWallet(req.user?.loginAddress);
     if (!walletAddress) return res.status(403).json({ error: "walletAddress required" });
-    let availableWei = null;
-    try {
-      const { balance, locked } = await fetchVaultBalances(walletAddress);
-      availableWei = balance - locked;
-    } catch (e) {
-      console.warn("Vault balance unavailable for buy-in:", e);
+    if (!vaultReadContract) {
+      return res.status(500).json({ error: "VAULT_LEDGER_ADDRESS is not configured" });
     }
-    if (availableWei !== null && amountCheck.amountWei > availableWei) {
+    const availableWei = await safeGetAvailableBalance(vaultReadContract, DYNW_TOKEN_ADDRESS, walletAddress);
+    if (amountCheck.amountWei > availableWei) {
       return res.status(400).json({ error: "Buy-in exceeds vault balance" });
     }
-    const session = await prisma.$transaction(async (tx) => {
-      const existing = await tx.blackjackSession.findFirst({
-        where: { walletAddress, status: "OPEN" },
-      });
-      if (existing) {
-        throw new Error("Active blackjack session already open");
-      }
-      const seatTaken = await tx.blackjackSession.findFirst({
-        where: { seatId, status: "OPEN" },
-      });
-      if (seatTaken) {
-        throw new Error("Seat already occupied");
-      }
-      return tx.blackjackSession.create({
-        data: {
-          walletAddress,
-          seatId,
-          buyInAmountWei: amountCheck.amountWei.toString(),
-          bankrollWei: amountCheck.amountWei.toString(),
-          status: "OPEN",
-        },
-      });
-    });
+    const session = await prisma.$transaction(
+      async (tx) => {
+        const existing = await tx.blackjackSession.findFirst({
+          where: { walletAddress, status: "OPEN" },
+        });
+        if (existing) {
+          throw new Error("Active blackjack session already open");
+        }
+        const seatTaken = await tx.blackjackSession.findFirst({
+          where: { seatId, status: "OPEN" },
+        });
+        if (seatTaken) {
+          throw new Error("Seat already occupied");
+        }
+        return tx.blackjackSession.create({
+          data: {
+            walletAddress,
+            seatId,
+            buyInAmountWei: amountCheck.amountWei.toString(),
+            bankrollWei: amountCheck.amountWei.toString(),
+            status: "OPEN",
+          },
+        });
+      },
+      { isolationLevel: "Serializable" },
+    );
     const betId = buildBlackjackSessionBetId(session.id);
     res.json({
       ok: true,
@@ -836,6 +825,7 @@ app.post("/api/blackjack/action", requireAuth, async (req, res) => {
           stateJson: tableState,
           outcome,
           payoutWei: payoutWei.toString(),
+          betAmountWei: tableState.hands.reduce((sum, entry) => sum + BigInt(entry.betWei), 0n).toString(),
         },
       });
       let updatedSession = session;
