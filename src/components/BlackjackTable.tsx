@@ -20,7 +20,6 @@ type BlackjackTableProps = {
   wallet: string | null;
   walletProvider: any;
   isSignedIn: boolean;
-  loginAddress: string | null;
   coinSymbol: string;
   coinDecimals: number;
 };
@@ -72,7 +71,6 @@ export default function BlackjackTable({
   wallet,
   walletProvider,
   isSignedIn,
-  loginAddress,
   coinSymbol,
   coinDecimals,
 }: BlackjackTableProps) {
@@ -84,6 +82,35 @@ export default function BlackjackTable({
   const [vaultStatus, setVaultStatus] = useState("");
   const [settlementStatus, setSettlementStatus] = useState("");
   const [loading, setLoading] = useState(false);
+  const { vaultBalance, vaultLocked, refresh: refreshVaultBalance } = useVaultLedgerBalance(wallet, walletProvider);
+  const availableVaultWei =
+    vaultBalance !== null && vaultLocked !== null ? vaultBalance - vaultLocked : vaultBalance;
+
+  const vaultWalletAddress = loginAddress || wallet;
+  const { vaultBalance, vaultLocked, refresh: refreshVaultBalance } = useVaultLedgerBalance(
+    vaultWalletAddress,
+    walletProvider,
+  );
+
+  const availableVaultWei =
+    vaultBalance !== null && vaultLocked !== null && vaultBalance > vaultLocked
+      ? vaultBalance - vaultLocked
+      : vaultBalance;
+
+  const vaultWalletAddress = loginAddress || wallet;
+  const {
+    vaultBalance: vaultBalanceWei,
+    vaultLocked: vaultLockedWei,
+    refresh: refreshVaultBalance,
+  } = useVaultLedgerBalance(
+    vaultWalletAddress,
+    walletProvider,
+  );
+
+  const availableVaultBalanceWei =
+    vaultBalanceWei !== null && vaultLockedWei !== null && vaultBalanceWei > vaultLockedWei
+      ? vaultBalanceWei - vaultLockedWei
+      : vaultBalanceWei;
 
   const ledgerWalletAddress = loginAddress || wallet;
   const {
@@ -282,7 +309,7 @@ export default function BlackjackTable({
       setSettlementStatus(
         json?.settlement?.txHash
           ? `✅ Settlement confirmed: ${json.settlement.txHash}`
-          : "✅ Session closed."
+          : "✅ Session settled."
       );
       setSession(null);
       setHand(null);
@@ -308,11 +335,13 @@ export default function BlackjackTable({
             Session table · One lock tx to buy in · Off-chain gameplay · One settle tx to leave.
           </div>
         </div>
-        {session && (
-          <button className="btn btn-ghost" type="button" onClick={handleLeave} disabled={loading}>
-            Leave &amp; settle
-          </button>
-        )}
+        <div className="blackjack-header-actions">
+          {session && (
+            <button className="btn btn-ghost" type="button" onClick={handleLeave} disabled={loading}>
+              Leave &amp; settle
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="blackjack-summary">

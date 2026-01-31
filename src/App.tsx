@@ -1535,7 +1535,6 @@ export default function App() {
           wallet={wallet}
           walletProvider={walletProvider}
           isSignedIn={isSignedIn}
-          loginAddress={loginAddress}
           coinSymbol={COIN_SYMBOL}
           coinDecimals={coinDecimals}
         />

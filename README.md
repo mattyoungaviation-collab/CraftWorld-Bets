@@ -142,10 +142,11 @@ player leaves. Gameplay actions are server-authoritative and authenticated via J
 
 ### House game treasury funding (Blackjack)
 
-Blackjack is a house game. Players still lock their buy-in on the VaultLedger, but net winnings are paid from the
-treasury's internal balance. Make sure the treasury address is pre-funded before enabling Blackjack settlements, or
-winners will be blocked from leaving the table. The operator never transfers tokens directly for payouts—it only calls
-`settleBet` to move internal balances between the player and treasury.
+Blackjack is a house game. Players lock a single buy-in on the VaultLedger, play hands off-chain with that bankroll,
+and settle once when leaving the table. Net winnings are paid from the treasury's internal balance. Make sure the
+treasury address is pre-funded before enabling Blackjack settlements, or winners will be blocked from leaving the
+table. The operator never transfers tokens directly for payouts—it only calls `settleBet` to move internal balances
+between the player and treasury.
 
 **Authorization model:** Option A (operator-settlement). Users call `placeBet` directly from their wallet. The
 `OPERATOR_ROLE` can call `settleBet`, but it can only move balances between internal ledgers and the treasury/fee
@@ -222,8 +223,8 @@ Set the server environment variables for settlement and betting:
 
 ### Blackjack session API (smoke)
 
-Use a signed-in JWT (`$TOKEN`) and a wallet address (`$WALLET`) to exercise the blackjack session flow. Gameplay is
-server-authoritative and off-chain; only the buy-in and leave actions touch the VaultLedger contract.
+Use a signed-in JWT (`$TOKEN`) to exercise the blackjack session flow. Gameplay is server-authoritative and off-chain;
+only the buy-in and leave actions touch the VaultLedger contract.
 
 ```bash
 # Check your current open session (or null)
