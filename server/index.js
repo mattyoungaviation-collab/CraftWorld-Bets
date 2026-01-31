@@ -7,7 +7,12 @@ import jwt from "jsonwebtoken";
 import { Contract, JsonRpcProvider, Wallet, parseUnits, verifyMessage } from "ethers";
 import { makeStore, newId, settleMarket } from "./betting.js";
 import { getOrCreateUser, prisma } from "./db.js";
-import { buildBlackjackSessionBetId, getVaultReadContract } from "./lib/vaultLedger.js";
+import {
+  buildBlackjackSessionBetId,
+  getVaultReadContract,
+  safeGetAvailableBalance,
+  safeGetLockedBalance,
+} from "./lib/vaultLedger.js";
 import { computeModelOdds } from "./odds.js";
 
 const app = express();
@@ -450,12 +455,14 @@ async function fetchVaultBalances(walletAddress) {
   if (!vaultReadContract) {
     throw new Error("VAULT_LEDGER_ADDRESS is not configured");
   }
-  const [available, locked] = await Promise.all([
-    vaultReadContract.getAvailableBalance(DYNW_TOKEN_ADDRESS, walletAddress),
-    vaultReadContract.getLockedBalance(DYNW_TOKEN_ADDRESS, walletAddress),
+
+  const [availableWei, lockedWei] = await Promise.all([
+    safeGetAvailableBalance(vaultReadContract, DYNW_TOKEN_ADDRESS, walletAddress),
+    safeGetLockedBalance(vaultReadContract, DYNW_TOKEN_ADDRESS, walletAddress),
   ]);
-  const balance = BigInt(available) + BigInt(locked);
-  return { balance, locked: BigInt(locked) };
+
+  const balanceWei = availableWei + lockedWei;
+  return { balance: balanceWei, locked: lockedWei };
 }
 
 async function fetchVaultBetStake(betId, walletAddress) {
@@ -891,8 +898,17 @@ app.post("/api/blackjack/leave", requireAuth, async (req, res) => {
         if (!treasuryAddress) {
           return res.status(500).json({ error: "Treasury address is not configured" });
         }
-        const treasuryAvailable = await vaultReadContract.getAvailableBalance(DYNW_TOKEN_ADDRESS, treasuryAddress);
-        if (BigInt(treasuryAvailable) < netPnlWei) {
+        const treasuryAvailableWei = await safeGetAvailableBalance(
+          vaultReadContract,
+          DYNW_TOKEN_ADDRESS,
+          treasuryAddress,
+        );
+        if (treasuryAvailableWei < netPnlWei) {
+          console.warn("Treasury available insufficient", {
+            treasuryAddress,
+            treasuryAvailableWei: treasuryAvailableWei.toString(),
+            netPnlWei: netPnlWei.toString(),
+          });
           return res.status(400).json({ error: "House bankroll insufficient; treasury needs funding." });
         }
         const tx = await vaultContract.settleBet(
