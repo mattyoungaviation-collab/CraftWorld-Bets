@@ -118,6 +118,13 @@ The `contracts/VaultLedger.sol` contract escrows DYNW (and optional WRON) on-cha
 each wallet. Users deposit and withdraw directly. Bets lock internal balances, and the operator can only settle by
 moving value between ledgers and the treasury/fee accounts.
 
+### House game treasury funding (Blackjack)
+
+Blackjack is a house game. Players still lock their buy-in on the VaultLedger, but net winnings are paid from the
+treasury's internal balance. Make sure the treasury address is pre-funded before enabling Blackjack settlements, or
+winners will be blocked from leaving the table. The operator never transfers tokens directly for payouts—it only calls
+`settleBet` to move internal balances between the player and treasury.
+
 **Authorization model:** Option A (operator-settlement). Users call `placeBet` directly from their wallet. The
 `OPERATOR_ROLE` can call `settleBet`, but it can only move balances between internal ledgers and the treasury/fee
 accounts—never withdraw user balances to arbitrary addresses.
