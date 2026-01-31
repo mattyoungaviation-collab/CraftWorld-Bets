@@ -1,4 +1,5 @@
-import { BrowserProvider, Contract, id } from "ethers";
+import { Contract, id } from "ethers";
+import { getEthersSigner } from "./ethersSigner";
 import { DYNW_TOKEN } from "./tokens";
 
 export const VAULT_LEDGER_ADDRESS = (import.meta.env.VITE_VAULT_LEDGER_ADDRESS as string | undefined) || "";
@@ -19,8 +20,7 @@ export function buildBetId(masterpieceId: number, position: number) {
 
 export async function getVaultContract(provider: any) {
   if (!provider || !VAULT_LEDGER_ADDRESS) return null;
-  const browserProvider = new BrowserProvider(provider);
-  const signer = await browserProvider.getSigner();
+  const { signer } = await getEthersSigner(provider);
   const contract = new Contract(VAULT_LEDGER_ADDRESS, VAULT_LEDGER_ABI, signer);
   return { contract, signer };
 }
