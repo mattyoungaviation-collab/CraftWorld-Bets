@@ -1,6 +1,6 @@
 # CraftWorld Bets
 
-CraftWorld Bets includes the original leaderboard betting desk plus a new multiplayer **Crash** game that runs in realtime with a provably fair commit-reveal flow and on-chain settlement via the VaultLedger contract.
+CraftWorld Bets includes the original leaderboard betting desk plus a new multiplayer **Crash** game that runs in realtime with a provably fair commit-reveal flow and on-chain settlement via dedicated pool contracts.
 
 ## Crash game overview
 
@@ -23,7 +23,25 @@ P(crash >= x) = (1 - edge) / x,  edge = 2%
 crash = (1 - edge) / u
 ```
 
-## Vault Ledger smart contract
+## On-chain payout contracts
+
+### MasterpiecePool (leaderboard bets)
+
+`contracts/MasterpiecePool.sol` holds DYNW wagers for each leaderboard market and pays out winners directly to their wallets once the operator settles a result.
+
+- `placeBet(betId, position, amount)` transfers DYNW into the pool for the given market.
+- `settleMarket(...)` executes the pro‑rata payouts computed by the server (same pool math already in the app).
+- `carryoverByPosition[position]` tracks carryovers between markets for the same position.
+
+### CrashVault (Crash rounds)
+
+`contracts/CrashVault.sol` holds Crash stakes and pays out cashouts directly to players.
+
+- `placeBet(roundId, amount)` transfers the user stake into the vault.
+- `cashout(roundId, user, payout)` (operator-only) pays `payout = stake * multiplier`.
+- `settleLoss(roundId, user)` (operator-only) moves the stake to the treasury after the crash.
+
+### Vault Ledger (legacy)
 
 `contracts/VaultLedger.sol` escrows DYNW on-chain and maintains a ledger of available + locked balances.
 
@@ -32,7 +50,50 @@ crash = (1 - edge) / u
 - `settleBet` unlocks the stake and applies a net win/loss against the treasury
 - Only the **operator** can call `settleBet`
 
-### Deploying the Vault Ledger to Ronin
+## Deploying the pool contracts to Ronin
+
+### 1) Deploy MasterpiecePool
+
+```bash
+RONIN_RPC=... \
+DEPLOYER_PRIVATE_KEY=0x... \
+DYNW_TOKEN_ADDRESS=0x... \
+TREASURY_ADDRESS=0x... \
+OPERATOR_ADDRESS=0x... \
+npx hardhat run --network ronin scripts/deploy-masterpiece-pool.ts
+```
+
+### 2) Deploy CrashVault
+
+```bash
+RONIN_RPC=... \
+DEPLOYER_PRIVATE_KEY=0x... \
+DYNW_TOKEN_ADDRESS=0x... \
+TREASURY_ADDRESS=0x... \
+OPERATOR_ADDRESS=0x... \
+npx hardhat run --network ronin scripts/deploy-crash-vault.ts
+```
+
+### 3) Fund the pools
+
+Each pool must hold enough DYNW to pay out winners:
+
+1. Transfer DYNW to the pool contract addresses (MasterpiecePool + CrashVault).
+2. Keep the treasury funded for carryover/house accounting.
+3. Confirm balances with a block explorer or `cast balance`.
+
+### 4) Verify contracts
+
+After deployment, verify the contracts on the Ronin explorer:
+
+```bash
+npx hardhat verify --network ronin <MASTERPIECE_POOL_ADDRESS> <DYNW_TOKEN_ADDRESS> <TREASURY_ADDRESS> <OPERATOR_ADDRESS>
+npx hardhat verify --network ronin <CRASH_VAULT_ADDRESS> <DYNW_TOKEN_ADDRESS> <TREASURY_ADDRESS> <OPERATOR_ADDRESS>
+```
+
+If you redeploy, update the frontend + backend env vars (see below) and re-fund the new contracts.
+
+### Deploying the Vault Ledger to Ronin (legacy)
 
 ```bash
 RONIN_RPC=... \
@@ -45,7 +106,7 @@ npm run deploy:vault-ledger
 
 The script writes `vault-ledger-deployment.json` and `VaultLedger.metadata.json` for verification.
 
-### Smoke test
+### Smoke test (legacy)
 
 ```bash
 RONIN_RPC=... \
@@ -65,7 +126,8 @@ node scripts/vault-ledger-smoke.mjs
 - `DATABASE_URL`
 - `RONIN_RPC`
 - `DYNW_TOKEN_ADDRESS`
-- `VAULT_LEDGER_ADDRESS`
+- `MASTERPIECE_POOL_ADDRESS`
+- `CRASH_VAULT_ADDRESS`
 - `OPERATOR_PRIVATE_KEY`
 - `TREASURY_ADDRESS`
 - `BETS_DATA_DIR=/var/data`
@@ -78,7 +140,9 @@ node scripts/vault-ledger-smoke.mjs
 ### Frontend (Vite)
 
 - `VITE_WALLETCONNECT_PROJECT_ID`
-- `VITE_VAULT_LEDGER_ADDRESS`
+- `VITE_MASTERPIECE_POOL_ADDRESS`
+- `VITE_CRASH_VAULT_ADDRESS`
+- `VITE_VAULT_LEDGER_ADDRESS` (legacy)
 - `VITE_WRON_ADDRESS` (optional)
 - `VITE_KATANA_FACTORY_ADDRESS` (optional)
 - `VITE_KATANA_PAIR_ADDRESS` (optional)
@@ -115,10 +179,9 @@ npx prisma migrate deploy
 
 ## Treasury bankroll checklist
 
-The treasury ledger account must pre-fund the VaultLedger to cover Crash cashouts:
+The pools must be funded to cover payouts:
 
 - [ ] Treasury wallet holds DYNW.
-- [ ] Treasury approves the VaultLedger to transfer DYNW.
-- [ ] Treasury deposits DYNW into the VaultLedger.
+- [ ] Transfer DYNW into the MasterpiecePool and CrashVault contracts.
 - [ ] Operator wallet is funded for gas.
-- [ ] Run the smoke test to validate a full deposit → bet → settle → withdraw flow.
+- [ ] Verify balances and run a test round to confirm payouts.

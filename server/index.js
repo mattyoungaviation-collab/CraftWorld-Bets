@@ -19,7 +19,6 @@ import { Server as SocketIOServer } from "socket.io";
 import { makeStore, newId, settleMarket } from "./betting.js";
 import { getOrCreateUser, prisma } from "./db.js";
 import { computeModelOdds } from "./odds.js";
-import { getVaultReadContract } from "./lib/vaultLedger.js";
 import { CrashEngine } from "./crash/engine.js";
 
 const app = express();
@@ -62,12 +61,11 @@ const BET_MAX_AMOUNT = Number.isFinite(Number(process.env.BET_MAX_AMOUNT))
   : null;
 const RONIN_RPC = process.env.RONIN_RPC || "https://api.roninchain.com/rpc";
 const DYNW_TOKEN_ADDRESS = process.env.DYNW_TOKEN_ADDRESS || "0x17ff4EA5dD318E5FAf7f5554667d65abEC96Ff57";
-const VAULT_LEDGER_ADDRESS = process.env.VAULT_LEDGER_ADDRESS || "";
+const MASTERPIECE_POOL_ADDRESS = process.env.MASTERPIECE_POOL_ADDRESS || "";
+const CRASH_VAULT_ADDRESS = process.env.CRASH_VAULT_ADDRESS || "";
 const TREASURY_ADDRESS = process.env.TREASURY_ADDRESS || "";
 const OPERATOR_PRIVATE_KEY = process.env.OPERATOR_PRIVATE_KEY || "";
 const DYNW_DECIMALS = 18;
-const OUTCOME_WIN = 1;
-const OUTCOME_LOSE = 2;
 const CRASH_MIN_BET = Number(process.env.CRASH_MIN_BET ?? "10");
 const CRASH_MAX_BET = Number(process.env.CRASH_MAX_BET ?? "2500");
 const CRASH_HOUSE_EDGE_BPS = Number(process.env.CRASH_HOUSE_EDGE_BPS ?? "200");
@@ -81,22 +79,28 @@ const ERC20_READ_ABI = [
   "function balanceOf(address owner) view returns (uint256)",
   "function allowance(address owner, address spender) view returns (uint256)",
 ];
-const VAULT_LEDGER_ABI = [
-  "function placeBet(bytes32 betId, address token, uint256 amount)",
-  "function settleBet(bytes32 betId, address token, uint256 netAmount, uint8 outcome, address[] participants)",
-  "function getAvailableBalance(address token, address owner) view returns (uint256)",
-  "function getLockedBalance(address token, address owner) view returns (uint256)",
-  "function betStakes(bytes32 betId, address owner) view returns (uint256)",
+const MASTERPIECE_POOL_ABI = [
+  "function placeBet(bytes32 betId, uint8 position, uint256 amount)",
+  "function settleMarket(bytes32 betId, uint8 position, address[] winners, uint256[] payouts, uint256 houseTake, uint256 carryoverNext)",
+  "function getPool(bytes32 betId) view returns (uint256)",
+];
+const CRASH_VAULT_ABI = [
+  "function placeBet(bytes32 roundId, uint256 amount)",
+  "function cashout(bytes32 roundId, address user, uint256 payout)",
+  "function settleLoss(bytes32 roundId, address user)",
+  "function getStake(bytes32 roundId, address user) view returns (uint256)",
 ];
 const roninProvider = new JsonRpcProvider(RONIN_RPC);
 const dynwRead = DYNW_TOKEN_ADDRESS ? new Contract(DYNW_TOKEN_ADDRESS, ERC20_READ_ABI, roninProvider) : null;
-const operatorSigner =
-  OPERATOR_PRIVATE_KEY && VAULT_LEDGER_ADDRESS ? new Wallet(OPERATOR_PRIVATE_KEY, roninProvider) : null;
-const vaultContract =
-  operatorSigner && VAULT_LEDGER_ADDRESS
-    ? new Contract(VAULT_LEDGER_ADDRESS, VAULT_LEDGER_ABI, operatorSigner)
+const operatorSigner = OPERATOR_PRIVATE_KEY ? new Wallet(OPERATOR_PRIVATE_KEY, roninProvider) : null;
+const masterpiecePoolContract =
+  operatorSigner && MASTERPIECE_POOL_ADDRESS
+    ? new Contract(MASTERPIECE_POOL_ADDRESS, MASTERPIECE_POOL_ABI, operatorSigner)
     : null;
-const vaultReadContract = VAULT_LEDGER_ADDRESS ? getVaultReadContract(VAULT_LEDGER_ADDRESS, roninProvider) : null;
+const crashVaultContract =
+  operatorSigner && CRASH_VAULT_ADDRESS ? new Contract(CRASH_VAULT_ADDRESS, CRASH_VAULT_ABI, operatorSigner) : null;
+const crashVaultReadContract =
+  CRASH_VAULT_ADDRESS ? new Contract(CRASH_VAULT_ADDRESS, CRASH_VAULT_ABI, roninProvider) : null;
 const authNonces = new Map();
 const crashBetCooldown = new Map();
 const crashCashoutCooldown = new Map();
@@ -129,6 +133,15 @@ const MASTERPIECE_QUERY = `
     }
   }
 `;
+
+function serializeCrashBet(bet) {
+  if (!bet) return bet;
+  return {
+    ...bet,
+    amountWei: bet.amountWei ? bet.amountWei.toString() : null,
+    payoutWei: bet.payoutWei ? bet.payoutWei.toString() : null,
+  };
+}
 
 async function fetchMasterpiece(id) {
   const jwt = process.env.CRAFTWORLD_JWT;
@@ -317,20 +330,13 @@ const crashEngine = new CrashEngine({
   cooldownMs: CRASH_COOLDOWN_MS,
   houseEdgeBps: CRASH_HOUSE_EDGE_BPS,
   logger: console,
-  settleLoser: async (bet, round) => {
-    if (!vaultContract || !DYNW_TOKEN_ADDRESS) {
-      console.warn("Vault contract not configured; skipping crash settlement");
+  settleLoser: async (bet) => {
+    if (!crashVaultContract) {
+      console.warn("Crash vault not configured; skipping crash settlement");
       return;
     }
     const betId = crashEngine.getRoundBetId();
-    const stakeWei = bet.amountWei;
-    const tx = await vaultContract.settleBet(
-      betId,
-      DYNW_TOKEN_ADDRESS,
-      stakeWei,
-      OUTCOME_LOSE,
-      [bet.address],
-    );
+    const tx = await crashVaultContract.settleLoss(betId, bet.address);
     const receipt = await tx.wait();
     console.log("Crash loser settled:", tx.hash, receipt?.status ?? null);
   },
@@ -402,15 +408,15 @@ app.post("/api/crash/bet", requireAuth, async (req, res) => {
     if (!rateLimit(crashBetCooldown, address)) {
       return res.status(429).json({ error: "Too many requests" });
     }
-    if (!vaultReadContract) {
-      return res.status(500).json({ error: "Vault contract not configured" });
+    if (!crashVaultReadContract) {
+      return res.status(500).json({ error: "Crash vault not configured" });
     }
     if (!crashEngine.canBet(address)) {
       return res.status(400).json({ error: "Betting is closed" });
     }
 
     const betId = crashEngine.getRoundBetId();
-    const stakeWei = BigInt(await vaultReadContract.betStakes(betId, address));
+    const stakeWei = BigInt(await crashVaultReadContract.getStake(betId, address));
     if (stakeWei === 0n) {
       return res.status(400).json({ error: "No on-chain stake found for this round" });
     }
@@ -421,7 +427,7 @@ app.post("/api/crash/bet", requireAuth, async (req, res) => {
     }
 
     const bet = crashEngine.registerBet({ address, amount, amountWei: stakeWei });
-    res.json({ ok: true, betId, bet });
+    res.json({ ok: true, betId, bet: serializeCrashBet(bet) });
   } catch (e) {
     res.status(400).json({ error: String(e?.message || e) });
   }
@@ -434,8 +440,8 @@ app.post("/api/crash/cashout", requireAuth, async (req, res) => {
     if (!rateLimit(crashCashoutCooldown, address)) {
       return res.status(429).json({ error: "Too many requests" });
     }
-    if (!vaultContract || !DYNW_TOKEN_ADDRESS) {
-      return res.status(500).json({ error: "Vault contract not configured" });
+    if (!crashVaultContract || !DYNW_TOKEN_ADDRESS || !CRASH_VAULT_ADDRESS) {
+      return res.status(500).json({ error: "Crash vault not configured" });
     }
 
     const round = crashEngine.round;
@@ -452,17 +458,15 @@ app.post("/api/crash/cashout", requireAuth, async (req, res) => {
     const multiplier = round.currentMultiplier;
     const multiplierFixed = BigInt(Math.round(multiplier * 10_000));
     const payoutWei = (bet.amountWei * multiplierFixed) / 10_000n;
-    const netAmount = payoutWei >= bet.amountWei ? payoutWei - bet.amountWei : bet.amountWei - payoutWei;
-    const outcome = payoutWei >= bet.amountWei ? OUTCOME_WIN : OUTCOME_LOSE;
 
     const betId = crashEngine.getRoundBetId();
-    const tx = await vaultContract.settleBet(
-      betId,
-      DYNW_TOKEN_ADDRESS,
-      netAmount,
-      outcome,
-      [address],
-    );
+    if (dynwRead) {
+      const vaultBalance = BigInt(await dynwRead.balanceOf(CRASH_VAULT_ADDRESS));
+      if (vaultBalance < payoutWei) {
+        return res.status(400).json({ error: "Crash vault balance insufficient for payout" });
+      }
+    }
+    const tx = await crashVaultContract.cashout(betId, address, payoutWei);
     const receipt = await tx.wait();
     console.log("Crash cashout settled:", tx.hash, receipt?.status ?? null);
 
@@ -474,7 +478,7 @@ app.post("/api/crash/cashout", requireAuth, async (req, res) => {
       payoutWei,
     });
 
-    res.json({ ok: true, payout, multiplier, txHash: tx.hash, bet: updated });
+    res.json({ ok: true, payout, multiplier, txHash: tx.hash, bet: serializeCrashBet(updated) });
   } catch (e) {
     res.status(400).json({ error: String(e?.message || e) });
   }
@@ -684,8 +688,8 @@ app.post("/api/settle/:masterpieceId", async (req, res) => {
   try {
     const mpId = Number(req.params.masterpieceId);
     if (!Number.isInteger(mpId)) return res.status(400).json({ error: "invalid masterpieceId" });
-    if (!vaultContract) {
-      return res.status(500).json({ error: "VAULT_LEDGER_ADDRESS or OPERATOR_PRIVATE_KEY not configured" });
+    if (!masterpiecePoolContract) {
+      return res.status(500).json({ error: "MASTERPIECE_POOL_ADDRESS or OPERATOR_PRIVATE_KEY not configured" });
     }
 
     const mpJson = await fetchMasterpiece(mpId);
@@ -734,41 +738,34 @@ app.post("/api/settle/:masterpieceId", async (req, res) => {
 
     const settlementReceipts = [];
     for (const result of results) {
-      const betId = buildBetId(result.masterpieceId, result.position);
-      const stakes = new Map();
-      store.bets
-        .filter((b) => b.masterpieceId === result.masterpieceId && b.position === result.position)
-        .forEach((bet) => {
-          const address = normalizeWallet(bet.loginAddress || bet.user);
-          if (!address) return;
-          const current = stakes.get(address) || 0;
-          stakes.set(address, current + Number(bet.wagerAmount ?? bet.amount ?? 0));
-        });
-      if (stakes.size === 0) {
+      if (result.pot === 0) {
         continue;
       }
-      const participants = Array.from(stakes.keys());
-      for (const participant of participants) {
-        const stake = stakes.get(participant) || 0;
-        const payout = Number(result.payouts?.[participant] || 0);
-        const stakeWei = parseUnits(String(stake), DYNW_DECIMALS);
-        const payoutWei = parseUnits(String(payout), DYNW_DECIMALS);
-        const netPnlWei = payoutWei - stakeWei;
-        if (netPnlWei === 0n) {
-          continue;
-        }
-        const [outcome, amount] =
-          netPnlWei > 0n ? [OUTCOME_WIN, netPnlWei] : [OUTCOME_LOSE, -netPnlWei];
-        const tx = await vaultContract.settleBet(
-          betId,
-          DYNW_TOKEN_ADDRESS,
-          amount,
-          outcome,
-          [participant],
-        );
-        const receipt = await tx.wait();
-        settlementReceipts.push({ betId, txHash: tx.hash, status: receipt?.status ?? null });
+      const betId = buildBetId(result.masterpieceId, result.position);
+      const payouts = result.payouts || {};
+      const winners = [];
+      const payoutAmounts = [];
+      for (const [user, payout] of Object.entries(payouts)) {
+        const address = normalizeWallet(user);
+        if (!address) continue;
+        const amount = parseUnits(String(payout), DYNW_DECIMALS);
+        if (amount <= 0n) continue;
+        winners.push(address);
+        payoutAmounts.push(amount);
       }
+      const houseTakeWei = parseUnits(String(result.houseTake || 0), DYNW_DECIMALS);
+      const carryoverNext = Number(store.carryover[String(result.position)] || 0);
+      const carryoverWei = parseUnits(String(carryoverNext), DYNW_DECIMALS);
+      const tx = await masterpiecePoolContract.settleMarket(
+        betId,
+        result.position,
+        winners,
+        payoutAmounts,
+        houseTakeWei,
+        carryoverWei,
+      );
+      const receipt = await tx.wait();
+      settlementReceipts.push({ betId, txHash: tx.hash, status: receipt?.status ?? null });
     }
 
     res.json({

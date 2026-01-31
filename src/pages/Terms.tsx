@@ -50,7 +50,7 @@ export default function Terms() {
           <p>The Service is a Ronin-based application that may allow users to:</p>
           <ul>
             <li>Connect a wallet (e.g., Ronin Wallet) to interact with the Service,</li>
-            <li>Deposit DYNW into a non-custodial Vault Ledger smart contract,</li>
+            <li>Approve DYNW for the on-chain Masterpiece Pool or Crash Vault smart contracts,</li>
             <li>
               Place bets/predictions on Craft World–themed outcomes (e.g., leaderboard placements, Masterpiece results),
             </li>
@@ -153,8 +153,8 @@ export default function Terms() {
           <h2>10. Custody; In-App Balances (IMPORTANT)</h2>
           <p>The Service uses a non-custodial design:</p>
           <p>
-            Users retain control of their wallet. Funds are deposited into a Vault Ledger smart contract that enforces
-            the betting rules, maintains an internal ledger, and allows withdrawals at any time.
+            Users retain control of their wallet. Bets are held in the on-chain pools until settlement, with payouts
+            sent directly to winning wallets and house allocations sent to the treasury.
           </p>
         </section>
 
