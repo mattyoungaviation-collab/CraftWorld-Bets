@@ -60,6 +60,7 @@ const VAULT_LEDGER_ABI = [
   "function getAvailableBalance(address token, address owner) view returns (uint256)",
   "function getLockedBalance(address token, address owner) view returns (uint256)",
   "function betStakes(bytes32 betId, address owner) view returns (uint256)",
+  "function treasury() view returns (address)",
 ];
 const roninProvider = new JsonRpcProvider(RONIN_RPC);
 const operatorSigner =
@@ -876,8 +877,18 @@ app.post("/api/blackjack/leave", requireAuth, async (req, res) => {
         return res.status(400).json({ error: "Vault stake does not match buy-in" });
       }
       if (netPnlWei > 0n) {
-        const treasuryAddress = normalizeWallet(TREASURY_ADDRESS);
-        if (!vaultReadContract || !treasuryAddress) {
+        if (!vaultReadContract) {
+          return res.status(500).json({ error: "Treasury address is not configured" });
+        }
+        let treasuryAddress = normalizeWallet(TREASURY_ADDRESS);
+        if (!treasuryAddress) {
+          try {
+            treasuryAddress = normalizeWallet(await vaultReadContract.treasury());
+          } catch (e) {
+            console.warn("Failed to load treasury address from VaultLedger:", e);
+          }
+        }
+        if (!treasuryAddress) {
           return res.status(500).json({ error: "Treasury address is not configured" });
         }
         const treasuryAvailable = await vaultReadContract.getAvailableBalance(DYNW_TOKEN_ADDRESS, treasuryAddress);
