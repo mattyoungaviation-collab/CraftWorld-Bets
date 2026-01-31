@@ -1166,6 +1166,9 @@ export default function App() {
             <Link className="btn btn-ghost" to="/token">
               DYNW Token
             </Link>
+            <Link className="btn btn-ghost" to="/crash">
+              Crash
+            </Link>
           </div>
           <button
             className="btn btn-primary"

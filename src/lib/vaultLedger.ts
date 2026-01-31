@@ -7,6 +7,8 @@ export const VAULT_LEDGER_ABI = [
   "function depositDYNW(uint256 amount)",
   "function withdrawDYNW(uint256 amount)",
   "function placeBet(bytes32 betId, address token, uint256 amount)",
+  "function getAvailableBalance(address token, address owner) view returns (uint256)",
+  "function getLockedBalance(address token, address owner) view returns (uint256)",
   "function balances(address owner, address token) view returns (uint256)",
   "function lockedBalances(address owner, address token) view returns (uint256)",
 ];

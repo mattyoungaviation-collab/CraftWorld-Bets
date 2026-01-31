@@ -66,17 +66,14 @@ async function main() {
   const deployerKey = requireEnv("DEPLOYER_PRIVATE_KEY");
   const dynwToken = requireEnv("DYNW_TOKEN_ADDRESS");
   const treasury = requireEnv("TREASURY_ADDRESS");
-  const feeRecipient = requireEnv("FEE_RECIPIENT");
   const operator = requireEnv("OPERATOR_ADDRESS");
-  const feeBps = Number(process.env.FEE_BPS ?? "0");
-  const wronToken = process.env.WRON_ADDRESS ?? "0x0000000000000000000000000000000000000000";
 
   const contract = compile();
   const provider = new JsonRpcProvider(rpcUrl);
   const wallet = new Wallet(deployerKey, provider);
 
   const factory = new ContractFactory(contract.abi, contract.evm.bytecode.object, wallet);
-  const deployed = await factory.deploy(dynwToken, wronToken, treasury, feeRecipient, feeBps, operator);
+  const deployed = await factory.deploy(dynwToken, treasury, operator);
   await deployed.waitForDeployment();
 
   const address = await deployed.getAddress();
@@ -84,10 +81,7 @@ async function main() {
     address,
     chainId: (await provider.getNetwork()).chainId.toString(),
     dynwToken,
-    wronToken,
     treasury,
-    feeRecipient,
-    feeBps,
     operator,
     compilerVersion: solc.version(),
     deployedAt: new Date().toISOString(),

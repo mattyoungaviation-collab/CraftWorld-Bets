@@ -2,14 +2,34 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
+import { createServer } from "http";
 import express from "express";
 import jwt from "jsonwebtoken";
-import { Contract, JsonRpcProvider, Wallet, parseUnits, verifyMessage } from "ethers";
+import {
+  Contract,
+  JsonRpcProvider,
+  Wallet,
+  formatUnits,
+  keccak256,
+  parseUnits,
+  toUtf8Bytes,
+  verifyMessage,
+} from "ethers";
+import { Server as SocketIOServer } from "socket.io";
 import { makeStore, newId, settleMarket } from "./betting.js";
 import { getOrCreateUser, prisma } from "./db.js";
 import { computeModelOdds } from "./odds.js";
+import { getVaultReadContract } from "./lib/vaultLedger.js";
+import { CrashEngine } from "./crash/engine.js";
 
 const app = express();
+const httpServer = createServer(app);
+const io = new SocketIOServer(httpServer, {
+  cors: {
+    origin: true,
+    credentials: true,
+  },
+});
 app.use(express.json());
 
 process.on("unhandledRejection", (err) => {
@@ -48,6 +68,12 @@ const OPERATOR_PRIVATE_KEY = process.env.OPERATOR_PRIVATE_KEY || "";
 const DYNW_DECIMALS = 18;
 const OUTCOME_WIN = 1;
 const OUTCOME_LOSE = 2;
+const CRASH_MIN_BET = Number(process.env.CRASH_MIN_BET ?? "10");
+const CRASH_MAX_BET = Number(process.env.CRASH_MAX_BET ?? "2500");
+const CRASH_HOUSE_EDGE_BPS = Number(process.env.CRASH_HOUSE_EDGE_BPS ?? "200");
+const CRASH_BETTING_MS = Number(process.env.CRASH_BETTING_MS ?? "6000");
+const CRASH_COOLDOWN_MS = Number(process.env.CRASH_COOLDOWN_MS ?? "4000");
+const CRASH_RATE_LIMIT_MS = Number(process.env.CRASH_RATE_LIMIT_MS ?? "500");
 const ERC20_READ_ABI = [
   "function name() view returns (string)",
   "function symbol() view returns (string)",
@@ -57,7 +83,7 @@ const ERC20_READ_ABI = [
 ];
 const VAULT_LEDGER_ABI = [
   "function placeBet(bytes32 betId, address token, uint256 amount)",
-  "function settleBet(bytes32 betId, address token, uint256 totalAmount, uint8 outcome, address[] participants)",
+  "function settleBet(bytes32 betId, address token, uint256 netAmount, uint8 outcome, address[] participants)",
   "function getAvailableBalance(address token, address owner) view returns (uint256)",
   "function getLockedBalance(address token, address owner) view returns (uint256)",
   "function betStakes(bytes32 betId, address owner) view returns (uint256)",
@@ -70,7 +96,10 @@ const vaultContract =
   operatorSigner && VAULT_LEDGER_ADDRESS
     ? new Contract(VAULT_LEDGER_ADDRESS, VAULT_LEDGER_ABI, operatorSigner)
     : null;
+const vaultReadContract = VAULT_LEDGER_ADDRESS ? getVaultReadContract(VAULT_LEDGER_ADDRESS, roninProvider) : null;
 const authNonces = new Map();
+const crashBetCooldown = new Map();
+const crashCashoutCooldown = new Map();
 
 const MASTERPIECE_QUERY = `
   query Masterpiece($id: ID) {
@@ -176,6 +205,16 @@ function buildBetId(masterpieceId, position) {
   return keccak256(toUtf8Bytes(`cw-bet:${masterpieceId}:${position}`));
 }
 
+function rateLimit(map, address) {
+  const now = Date.now();
+  const last = map.get(address) || 0;
+  if (now - last < CRASH_RATE_LIMIT_MS) {
+    return false;
+  }
+  map.set(address, now);
+  return true;
+}
+
 function getAuthToken(req) {
   const header = req.headers.authorization || "";
   if (header.startsWith("Bearer ")) return header.slice(7);
@@ -271,6 +310,41 @@ function addLedgerEntry(address, entry) {
   return record;
 }
 
+const crashEngine = new CrashEngine({
+  io,
+  dataDir,
+  bettingMs: CRASH_BETTING_MS,
+  cooldownMs: CRASH_COOLDOWN_MS,
+  houseEdgeBps: CRASH_HOUSE_EDGE_BPS,
+  logger: console,
+  settleLoser: async (bet, round) => {
+    if (!vaultContract || !DYNW_TOKEN_ADDRESS) {
+      console.warn("Vault contract not configured; skipping crash settlement");
+      return;
+    }
+    const betId = crashEngine.getRoundBetId();
+    const stakeWei = bet.amountWei;
+    const tx = await vaultContract.settleBet(
+      betId,
+      DYNW_TOKEN_ADDRESS,
+      stakeWei,
+      OUTCOME_LOSE,
+      [bet.address],
+    );
+    const receipt = await tx.wait();
+    console.log("Crash loser settled:", tx.hash, receipt?.status ?? null);
+  },
+});
+
+io.on("connection", (socket) => {
+  socket.emit("crash:state", crashEngine.getPublicState());
+  socket.on("crash:state:request", () => {
+    socket.emit("crash:state", crashEngine.getPublicState());
+  });
+});
+
+crashEngine.start();
+
 // ---- API routes FIRST ----
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
@@ -314,6 +388,95 @@ app.post("/api/auth/verify", async (req, res) => {
     res.json({ ok: true, address, token });
   } catch (e) {
     res.status(500).json({ error: String(e) });
+  }
+});
+
+app.get("/api/crash/state", (_req, res) => {
+  res.json(crashEngine.getPublicState());
+});
+
+app.post("/api/crash/bet", requireAuth, async (req, res) => {
+  try {
+    const address = normalizeWallet(req.user?.loginAddress);
+    if (!address) return res.status(400).json({ error: "Invalid user address" });
+    if (!rateLimit(crashBetCooldown, address)) {
+      return res.status(429).json({ error: "Too many requests" });
+    }
+    if (!vaultReadContract) {
+      return res.status(500).json({ error: "Vault contract not configured" });
+    }
+    if (!crashEngine.canBet(address)) {
+      return res.status(400).json({ error: "Betting is closed" });
+    }
+
+    const betId = crashEngine.getRoundBetId();
+    const stakeWei = BigInt(await vaultReadContract.betStakes(betId, address));
+    if (stakeWei === 0n) {
+      return res.status(400).json({ error: "No on-chain stake found for this round" });
+    }
+
+    const amount = Number(formatUnits(stakeWei, DYNW_DECIMALS));
+    if (!Number.isFinite(amount) || amount < CRASH_MIN_BET || amount > CRASH_MAX_BET) {
+      return res.status(400).json({ error: "Bet amount outside allowed limits" });
+    }
+
+    const bet = crashEngine.registerBet({ address, amount, amountWei: stakeWei });
+    res.json({ ok: true, betId, bet });
+  } catch (e) {
+    res.status(400).json({ error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/crash/cashout", requireAuth, async (req, res) => {
+  try {
+    const address = normalizeWallet(req.user?.loginAddress);
+    if (!address) return res.status(400).json({ error: "Invalid user address" });
+    if (!rateLimit(crashCashoutCooldown, address)) {
+      return res.status(429).json({ error: "Too many requests" });
+    }
+    if (!vaultContract || !DYNW_TOKEN_ADDRESS) {
+      return res.status(500).json({ error: "Vault contract not configured" });
+    }
+
+    const round = crashEngine.round;
+    if (!round || round.phase !== "RUNNING") {
+      return res.status(400).json({ error: "Round is not running" });
+    }
+    const bet = round.bets.get(address);
+    if (!bet) return res.status(404).json({ error: "No active bet" });
+    if (bet.cashedOut) return res.status(400).json({ error: "Already cashed out" });
+    if (round.currentMultiplier >= round.crashPoint) {
+      return res.status(400).json({ error: "Round already crashed" });
+    }
+
+    const multiplier = round.currentMultiplier;
+    const multiplierFixed = BigInt(Math.round(multiplier * 10_000));
+    const payoutWei = (bet.amountWei * multiplierFixed) / 10_000n;
+    const netAmount = payoutWei >= bet.amountWei ? payoutWei - bet.amountWei : bet.amountWei - payoutWei;
+    const outcome = payoutWei >= bet.amountWei ? OUTCOME_WIN : OUTCOME_LOSE;
+
+    const betId = crashEngine.getRoundBetId();
+    const tx = await vaultContract.settleBet(
+      betId,
+      DYNW_TOKEN_ADDRESS,
+      netAmount,
+      outcome,
+      [address],
+    );
+    const receipt = await tx.wait();
+    console.log("Crash cashout settled:", tx.hash, receipt?.status ?? null);
+
+    const payout = Number(formatUnits(payoutWei, DYNW_DECIMALS));
+    const updated = crashEngine.registerCashout({
+      address,
+      multiplier,
+      payout,
+      payoutWei,
+    });
+
+    res.json({ ok: true, payout, multiplier, txHash: tx.hash, bet: updated });
+  } catch (e) {
+    res.status(400).json({ error: String(e?.message || e) });
   }
 });
 
@@ -639,4 +802,4 @@ if (fs.existsSync(distDir)) {
 
 const port = process.env.PORT || 3000;
 const host = process.env.HOST || "0.0.0.0";
-app.listen(port, host, () => console.log(`Server running on http://${host}:${port}`));
+httpServer.listen(port, host, () => console.log(`Server running on http://${host}:${port}`));

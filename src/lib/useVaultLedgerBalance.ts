@@ -13,13 +13,24 @@ export function useVaultLedgerBalance(wallet: string | null, provider: any) {
       const browserProvider = new BrowserProvider(provider);
       const contract = new Contract(VAULT_LEDGER_ADDRESS, VAULT_LEDGER_ABI, browserProvider);
       const [balance, locked] = await Promise.all([
-        contract.balances(wallet, DYNW_TOKEN.address),
-        contract.lockedBalances(wallet, DYNW_TOKEN.address),
+        contract.getAvailableBalance(DYNW_TOKEN.address, wallet),
+        contract.getLockedBalance(DYNW_TOKEN.address, wallet),
       ]);
       setVaultBalance(BigInt(balance));
       setVaultLocked(BigInt(locked));
     } catch (e) {
-      console.error(e);
+      try {
+        const browserProvider = new BrowserProvider(provider);
+        const contract = new Contract(VAULT_LEDGER_ADDRESS, VAULT_LEDGER_ABI, browserProvider);
+        const [balance, locked] = await Promise.all([
+          contract.balances(wallet, DYNW_TOKEN.address),
+          contract.lockedBalances(wallet, DYNW_TOKEN.address),
+        ]);
+        setVaultBalance(BigInt(balance));
+        setVaultLocked(BigInt(locked));
+      } catch (err) {
+        console.error(err);
+      }
     }
   }, [wallet, provider]);
 
