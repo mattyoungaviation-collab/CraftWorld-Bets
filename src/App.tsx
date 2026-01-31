@@ -189,8 +189,9 @@ function getHandTotals(cards: Card[]) {
     total -= 10;
     aces -= 1;
   }
-  const isSoft = cards.some((card) => card.rank === "A") && total <= 21 && cards.reduce((sum, c) => sum + c.value, 0) !== total;
-  return { total, isSoft, isBust: total > 21 };
+  const soft =
+    cards.some((card) => card.rank === "A") && total <= 21 && cards.reduce((sum, c) => sum + c.value, 0) !== total;
+  return { total, soft };
 }
 
 function isBlackjack(cards: Card[]) {
@@ -234,7 +235,7 @@ function simulateDealerHand(deck: Card[], dealerCards: Card[]) {
     const totals = getHandTotals(cards);
     if (totals.total > 21) break;
     if (totals.total > 17) break;
-    if (totals.total === 17 && !totals.isSoft) break;
+    if (totals.total === 17 && !totals.soft) break;
     if (deck.length === 0) break;
     cards.push(drawRandomCard(deck));
   }
@@ -246,7 +247,7 @@ function simulatePlayerHand(deck: Card[], playerCards: Card[], dealerUpcard: num
   while (true) {
     const totals = getHandTotals(cards);
     if (totals.total >= 21) break;
-    const decision = basicStrategyDecision(totals.total, totals.isSoft, dealerUpcard);
+    const decision = basicStrategyDecision(totals.total, totals.soft, dealerUpcard);
     if (decision === "stand") break;
     if (deck.length === 0) break;
     cards.push(drawRandomCard(deck));
@@ -1341,6 +1342,10 @@ export default function App() {
     () => (selectedBlackjackSeatId !== null ? blackjackSeats.find((seat) => seat.id === selectedBlackjackSeatId) || null : null),
     [blackjackSeats, selectedBlackjackSeatId]
   );
+  const activeSessionSeat = useMemo(
+    () => (blackjackSession ? blackjackSeats.find((seat) => seat.id === blackjackSession.seatId) || null : null),
+    [blackjackSession, blackjackSeats]
+  );
 
   function applyBlackjackState(state: BlackjackState) {
     setBlackjackSeats(state.seats);
@@ -1397,8 +1402,10 @@ export default function App() {
         );
       } else {
         blackjackSessionIdRef.current = null;
-        setBlackjackBuyIn("");
-        setBlackjackBuyInDirty(false);
+        if (!blackjackBuyInDirty) {
+          setBlackjackBuyIn("");
+          setBlackjackBuyInDirty(false);
+        }
       }
     } catch (e) {
       console.error(e);
@@ -1505,6 +1512,10 @@ export default function App() {
   async function leaveSeat() {
     if (!wallet || !isSignedIn) {
       setToast("Sign in to leave the blackjack table.");
+      return;
+    }
+    if (activeSessionSeat?.status === "playing") {
+      setBlackjackVaultStatus("❌ Finish the current hand before leaving.");
       return;
     }
     setBlackjackSettlementStatus("");
@@ -1642,6 +1653,7 @@ export default function App() {
       : null;
   const selectedHasSession = Boolean(selectedSession);
   const selectedHasActiveSession = selectedSession?.status === "active";
+  const canLeave = Boolean(blackjackSession) && activeSessionSeat?.status !== "playing";
   const selectedSessionBankrollWei = selectedSession?.bankrollWei ?? null;
   const selectedActiveSeat = selectedSeat && blackjackActiveSeat === selectedSeatIndex && blackjackPhase === "player";
   const selectedActiveHandIndex = selectedSeat
@@ -2100,7 +2112,7 @@ export default function App() {
                 Reset Round
               </button>
               {blackjackSession && (
-                <button className="btn btn-ghost" onClick={() => leaveSeat()} disabled={activeSessionSeat?.status === "playing"}>
+                <button className="btn btn-ghost" onClick={() => leaveSeat()} disabled={!canLeave}>
                   Leave & settle
                 </button>
               )}
@@ -2254,6 +2266,7 @@ export default function App() {
             isOwner={selectedSeatIsOwner}
             hasSession={selectedHasSession}
             hasActiveSession={Boolean(selectedHasActiveSession)}
+            canLeave={canLeave}
             blackjackPhase={blackjackPhase}
             canAct={selectedCanAct}
             canDouble={selectedCanDouble}
