@@ -193,22 +193,31 @@ Set the server environment variables for settlement and betting:
 
 ### Blackjack session API (smoke)
 
-Use a signed-in JWT (`$TOKEN`) and a wallet address (`$WALLET`) to exercise the blackjack flow:
+Use a signed-in JWT (`$TOKEN`) to exercise the blackjack flow. Blackjack is session-based: one on-chain lock at buy-in,
+JWT-authenticated play actions off-chain, and one on-chain settle on leave.
 
 ```bash
-# Buy in (server will return a betId; lock the buy-in on-chain with placeBet)
+# Check vault balance for the signed-in wallet
+curl -s http://localhost:3000/api/blackjack/balance \\
+  -H "authorization: Bearer $TOKEN"
+
+# Buy in (server returns betId and sessionId; lock the buy-in on-chain with placeBet)
 curl -s -X POST http://localhost:3000/api/blackjack/buyin \\
   -H "content-type: application/json" \\
   -H "authorization: Bearer $TOKEN" \\
   -d '{"amountWei":"1000000000000000000","seatId":0}'
 
-# Deal a hand with the current wager amount
+# Fetch current open session + active hand
+curl -s http://localhost:3000/api/blackjack/session \\
+  -H "authorization: Bearer $TOKEN"
+
+# Deal a hand with the wager amount
 curl -s -X POST http://localhost:3000/api/blackjack/deal \\
   -H "content-type: application/json" \\
   -H "authorization: Bearer $TOKEN" \\
-  -d '{"amountWei":"25000000000000000000"}'
+  -d '{"betAmountWei":"25000000000000000000"}'
 
-# Perform an action (hit/stand/double/split)
+# Perform an action (hit/stand/double/split/surrender)
 curl -s -X POST http://localhost:3000/api/blackjack/action \\
   -H "content-type: application/json" \\
   -H "authorization: Bearer $TOKEN" \\
