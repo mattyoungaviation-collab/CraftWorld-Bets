@@ -1,8 +1,8 @@
 import { Contract, keccak256, toUtf8Bytes } from "ethers";
 
 const VAULT_LEDGER_READ_ABI = [
-  "function balances(address owner, address token) view returns (uint256)",
-  "function lockedBalances(address owner, address token) view returns (uint256)",
+  "function getAvailableBalance(address token, address owner) view returns (uint256)",
+  "function getLockedBalance(address token, address owner) view returns (uint256)",
   "function betStakes(bytes32 betId, address owner) view returns (uint256)",
 ];
 

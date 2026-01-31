@@ -44,17 +44,21 @@ const BET_MAX_AMOUNT = Number.isFinite(Number(process.env.BET_MAX_AMOUNT))
 const RONIN_RPC = process.env.RONIN_RPC || "https://api.roninchain.com/rpc";
 const DYNW_TOKEN_ADDRESS = process.env.DYNW_TOKEN_ADDRESS || "0x17ff4EA5dD318E5FAf7f5554667d65abEC96Ff57";
 const VAULT_LEDGER_ADDRESS = process.env.VAULT_LEDGER_ADDRESS || "";
+const TREASURY_ADDRESS = process.env.TREASURY_ADDRESS || "";
 const OPERATOR_PRIVATE_KEY = process.env.OPERATOR_PRIVATE_KEY || "";
 const DYNW_DECIMALS = 18;
 const BLACKJACK_TABLE_MIN_BET_WEI = process.env.BLACKJACK_MIN_BET_WEI
   ? BigInt(process.env.BLACKJACK_MIN_BET_WEI)
   : parseUnits("25", DYNW_DECIMALS);
 const BLACKJACK_DECKS = 6;
+const OUTCOME_WIN = 1;
+const OUTCOME_LOSE = 2;
+const OUTCOME_CANCEL = 3;
 const VAULT_LEDGER_ABI = [
   "function placeBet(bytes32 betId, address token, uint256 amount)",
-  "function settleBet(bytes32 betId, address[] participants, uint256[] payouts)",
-  "function balances(address owner, address token) view returns (uint256)",
-  "function lockedBalances(address owner, address token) view returns (uint256)",
+  "function settleBet(bytes32 betId, address token, uint256 totalAmount, uint8 outcome, address[] participants)",
+  "function getAvailableBalance(address token, address owner) view returns (uint256)",
+  "function getLockedBalance(address token, address owner) view returns (uint256)",
   "function betStakes(bytes32 betId, address owner) view returns (uint256)",
 ];
 const roninProvider = new JsonRpcProvider(RONIN_RPC);
@@ -445,11 +449,12 @@ async function fetchVaultBalances(walletAddress) {
   if (!vaultReadContract) {
     throw new Error("VAULT_LEDGER_ADDRESS is not configured");
   }
-  const [balance, locked] = await Promise.all([
-    vaultReadContract.balances(walletAddress, DYNW_TOKEN_ADDRESS),
-    vaultReadContract.lockedBalances(walletAddress, DYNW_TOKEN_ADDRESS),
+  const [available, locked] = await Promise.all([
+    vaultReadContract.getAvailableBalance(DYNW_TOKEN_ADDRESS, walletAddress),
+    vaultReadContract.getLockedBalance(DYNW_TOKEN_ADDRESS, walletAddress),
   ]);
-  return { balance: BigInt(balance), locked: BigInt(locked) };
+  const balance = BigInt(available) + BigInt(locked);
+  return { balance, locked: BigInt(locked) };
 }
 
 async function fetchVaultBetStake(betId, walletAddress) {
@@ -860,7 +865,7 @@ app.post("/api/blackjack/leave", requireAuth, async (req, res) => {
     const betId = buildBlackjackSessionBetId(session.id);
     const buyInWei = BigInt(session.buyInAmountWei);
     const bankrollWei = BigInt(session.bankrollWei);
-    const netDeltaWei = bankrollWei - buyInWei;
+    const netPnlWei = bankrollWei - buyInWei;
     let txHash = "skipped";
     if (!vaultContract || !operatorSigner) {
       console.warn("Vault not configured for blackjack settlement.");
@@ -870,13 +875,35 @@ app.post("/api/blackjack/leave", requireAuth, async (req, res) => {
       if (stakeWei < buyInWei) {
         return res.status(400).json({ error: "Vault stake does not match buy-in" });
       }
-      const payoutWei = bankrollWei < 0n ? 0n : bankrollWei;
-      if (netDeltaWei > 0n) {
-        await vaultContract.placeBet(betId, DYNW_TOKEN_ADDRESS, netDeltaWei);
+      if (netPnlWei > 0n) {
+        const treasuryAddress = normalizeWallet(TREASURY_ADDRESS);
+        if (!vaultReadContract || !treasuryAddress) {
+          return res.status(500).json({ error: "Treasury address is not configured" });
+        }
+        const treasuryAvailable = await vaultReadContract.getAvailableBalance(DYNW_TOKEN_ADDRESS, treasuryAddress);
+        if (BigInt(treasuryAvailable) < netPnlWei) {
+          return res.status(400).json({ error: "House bankroll insufficient; treasury needs funding." });
+        }
+        const tx = await vaultContract.settleBet(
+          betId,
+          DYNW_TOKEN_ADDRESS,
+          netPnlWei,
+          OUTCOME_WIN,
+          [walletAddress],
+        );
+        await tx.wait();
+        txHash = tx.hash;
+      } else if (netPnlWei < 0n) {
+        const tx = await vaultContract.settleBet(
+          betId,
+          DYNW_TOKEN_ADDRESS,
+          -netPnlWei,
+          OUTCOME_LOSE,
+          [walletAddress],
+        );
+        await tx.wait();
+        txHash = tx.hash;
       }
-      const tx = await vaultContract.settleBet(betId, [walletAddress], [payoutWei]);
-      await tx.wait();
-      txHash = tx.hash;
     }
     const closedSession = await prisma.blackjackSession.update({
       where: { id: session.id },
@@ -888,7 +915,7 @@ app.post("/api/blackjack/leave", requireAuth, async (req, res) => {
       settlement: {
         betId,
         txHash,
-        netDeltaWei: netDeltaWei.toString(),
+        netDeltaWei: netPnlWei.toString(),
         payoutWei: bankrollWei.toString(),
       },
     });
@@ -1165,16 +1192,27 @@ app.post("/api/settle/:masterpieceId", async (req, res) => {
         continue;
       }
       const participants = Array.from(stakes.keys());
-      const payouts = participants.map((address) => Number(result.payouts?.[address] || 0));
-      const payoutAmounts = payouts.map((amount) => parseUnits(String(amount), DYNW_DECIMALS));
-
-      const tx = await vaultContract.settleBet(
-        betId,
-        participants,
-        payoutAmounts,
-      );
-      const receipt = await tx.wait();
-      settlementReceipts.push({ betId, txHash: tx.hash, status: receipt?.status ?? null });
+      for (const participant of participants) {
+        const stake = stakes.get(participant) || 0;
+        const payout = Number(result.payouts?.[participant] || 0);
+        const stakeWei = parseUnits(String(stake), DYNW_DECIMALS);
+        const payoutWei = parseUnits(String(payout), DYNW_DECIMALS);
+        const netPnlWei = payoutWei - stakeWei;
+        if (netPnlWei === 0n) {
+          continue;
+        }
+        const [outcome, amount] =
+          netPnlWei > 0n ? [OUTCOME_WIN, netPnlWei] : [OUTCOME_LOSE, -netPnlWei];
+        const tx = await vaultContract.settleBet(
+          betId,
+          DYNW_TOKEN_ADDRESS,
+          amount,
+          outcome,
+          [participant],
+        );
+        const receipt = await tx.wait();
+        settlementReceipts.push({ betId, txHash: tx.hash, status: receipt?.status ?? null });
+      }
     }
 
     res.json({
