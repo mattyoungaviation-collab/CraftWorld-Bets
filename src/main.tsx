@@ -3,10 +3,8 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import "./index.css";
 import App from "./App.tsx";
-import Crash from "./pages/Crash.tsx";
 import Privacy from "./pages/Privacy.tsx";
 import Terms from "./pages/Terms.tsx";
-import Token from "./pages/Token.tsx";
 import { WalletProvider } from "./lib/wallet";
 
 createRoot(document.getElementById('root')!).render(
@@ -15,8 +13,6 @@ createRoot(document.getElementById('root')!).render(
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<App />} />
-          <Route path="/crash" element={<Crash />} />
-          <Route path="/token" element={<Token />} />
           <Route path="/terms" element={<Terms />} />
           <Route path="/privacy" element={<Privacy />} />
         </Routes>
