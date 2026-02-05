@@ -31,3 +31,157 @@ table { width: 100%; border-collapse: collapse; }
 th, td { border-bottom: 1px solid #2d3561; padding: 8px; text-align: left; }
 .site-footer { margin-top: 28px; opacity: 0.9; }
 .site-footer-links { display: flex; gap: 8px; }
+
+.reward-panel {
+  margin-top: 16px;
+  background: #12172e;
+}
+
+.muted {
+  color: #a7b0d6;
+}
+
+.accordion-list {
+  display: grid;
+  gap: 10px;
+}
+
+.accordion-item {
+  border: 1px solid #2d3561;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #171d38;
+  transition: box-shadow 180ms ease, border-color 180ms ease;
+}
+
+.accordion-item.is-open {
+  border-color: #4b59b8;
+  box-shadow: 0 0 0 1px rgba(90, 108, 255, 0.3), 0 8px 24px rgba(5, 10, 35, 0.45);
+}
+
+.accordion-header {
+  width: 100%;
+  margin: 0;
+  padding: 12px;
+  border: 0;
+  background: transparent;
+  color: #e8ecff;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.stage-status {
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  letter-spacing: 0.4px;
+}
+
+.stage-status.is-unlocked {
+  background: rgba(46, 212, 122, 0.2);
+  color: #6df2b3;
+}
+
+.stage-status.is-locked {
+  background: rgba(240, 183, 88, 0.2);
+  color: #ffcf7a;
+}
+
+.accordion-content {
+  padding: 0 12px 12px;
+  animation: slide-down 160ms ease-out;
+}
+
+@keyframes slide-down {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.tier-progress {
+  margin: 8px 0 14px;
+}
+
+.tier-progress__meta {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: #b2b8db;
+}
+
+.tier-progress__bar {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: #0f1329;
+  border: 1px solid #2a3158;
+  overflow: hidden;
+}
+
+.tier-progress__bar > span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #5a6cff, #72d2ff);
+}
+
+.reward-subpanel {
+  border: 1px solid #293058;
+  border-radius: 10px;
+  background: #131934;
+  padding: 10px;
+  margin-top: 10px;
+}
+
+.reward-subpanel h4 {
+  margin: 0 0 8px;
+}
+
+.reward-chip-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.reward-chip {
+  min-width: 160px;
+  max-width: 100%;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid #314079;
+  background: #0f1430;
+  display: grid;
+  gap: 4px;
+}
+
+.reward-chip__top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.reward-chip__icon { opacity: 0.85; }
+
+.reward-chip__tag {
+  font-size: 10px;
+  letter-spacing: 0.7px;
+  color: #93a0df;
+}
+
+.reward-chip__label {
+  font-size: 14px;
+}
+
+.reward-chip__sublabel {
+  color: #aab3db;
+  font-size: 12px;
+}
+
+.reward-chip__link {
+  color: #9bc5ff;
+  font-size: 12px;
+  text-decoration: underline;
+}
