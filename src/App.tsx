@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import SiteFooter from "./components/SiteFooter";
+import LeaderboardRewardsPanel from "./components/LeaderboardRewardsPanel";
+import RewardStagesPanel from "./components/RewardStagesPanel";
 import { RONIN_CHAIN, shortAddress } from "./lib/tokens";
 import { useWallet } from "./lib/wallet";
+import type { RewardItem } from "./lib/rewards";
 import "./App.css";
 
 type LeaderRow = {
@@ -19,6 +22,18 @@ type Masterpiece = {
   collectedPoints: number;
   requiredPoints: number;
   leaderboard: LeaderRow[];
+  profileByUserId?: {
+    masterpiecePoints?: number | null;
+  } | null;
+  rewardStages?: {
+    requiredMasterpiecePoints: number;
+    rewards?: RewardItem[] | null;
+    battlePassRewards?: RewardItem[] | null;
+  }[] | null;
+  leaderboardRewards?: {
+    top: number;
+    rewards?: RewardItem[] | null;
+  }[] | null;
 };
 
 type Bet = {
@@ -147,6 +162,8 @@ export default function App() {
     return (mp?.leaderboard || []).slice(0, 100);
   }, [mp]);
 
+  const playerMasterpiecePoints = mp?.profileByUserId?.masterpiecePoints ?? 0;
+
   useEffect(() => {
     if (availablePicks.length > 0 && !selectedUid) {
       setSelectedUid(availablePicks[0].profile.uid);
@@ -241,6 +258,32 @@ export default function App() {
               </li>
             ))}
           </ul>
+
+          <h3>Leaderboard</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Player</th>
+                <th>MP Points</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(mp?.leaderboard || []).map((entry) => (
+                <tr key={`${entry.profile.uid}-${entry.position}`}>
+                  <td>#{entry.position}</td>
+                  <td>{entry.profile.displayName || entry.profile.uid}</td>
+                  <td>{entry.masterpiecePoints.toLocaleString("en-US")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <RewardStagesPanel
+            rewardStages={mp?.rewardStages}
+            masterpiecePoints={playerMasterpiecePoints}
+          />
+          <LeaderboardRewardsPanel leaderboardRewards={mp?.leaderboardRewards} />
         </section>
       )}
 
