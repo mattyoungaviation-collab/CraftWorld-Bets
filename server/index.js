@@ -1,25 +1,20 @@
 import fs from "fs";
 import path from "path";
-import crypto from "crypto";
 import { fileURLToPath } from "url";
 import { createServer } from "http";
 import express from "express";
-import jwt from "jsonwebtoken";
 import {
   Contract,
   JsonRpcProvider,
   Wallet,
-  formatUnits,
   keccak256,
   parseUnits,
-  toUtf8Bytes,
-  verifyMessage,
+  toUtf8Bytes
 } from "ethers";
 import { Server as SocketIOServer } from "socket.io";
 import { makeStore, newId, settleMarket } from "./betting.js";
-import { getOrCreateUser, prisma } from "./db.js";
+import { prisma } from "./db.js";
 import { computeModelOdds } from "./odds.js";
-import { CrashEngine } from "./crash/engine.js";
 
 const app = express();
 const httpServer = createServer(app);
@@ -53,25 +48,15 @@ const modelHistoryPath = path.join(dataDir, "history.json");
 
 // ---- Craft World GraphQL ----
 const GRAPHQL_URL = "https://craft-world.gg/graphql";
-const VALIDATION_TTL_MS = 5 * 60 * 1000;
-const validations = new Map();
-const JWT_SECRET = process.env.JWT_SECRET || "";
 const BET_MAX_AMOUNT = Number.isFinite(Number(process.env.BET_MAX_AMOUNT))
   ? Number(process.env.BET_MAX_AMOUNT)
   : null;
 const RONIN_RPC = process.env.RONIN_RPC || "https://api.roninchain.com/rpc";
 const DYNW_TOKEN_ADDRESS = process.env.DYNW_TOKEN_ADDRESS || "0x17ff4EA5dD318E5FAf7f5554667d65abEC96Ff57";
 const MASTERPIECE_POOL_ADDRESS = process.env.MASTERPIECE_POOL_ADDRESS || "";
-const CRASH_VAULT_ADDRESS = process.env.CRASH_VAULT_ADDRESS || "";
 const TREASURY_ADDRESS = process.env.TREASURY_ADDRESS || "";
 const OPERATOR_PRIVATE_KEY = process.env.OPERATOR_PRIVATE_KEY || "";
 const DYNW_DECIMALS = 18;
-const CRASH_MIN_BET = Number(process.env.CRASH_MIN_BET ?? "10");
-const CRASH_MAX_BET = Number(process.env.CRASH_MAX_BET ?? "2500");
-const CRASH_HOUSE_EDGE_BPS = Number(process.env.CRASH_HOUSE_EDGE_BPS ?? "200");
-const CRASH_BETTING_MS = Number(process.env.CRASH_BETTING_MS ?? "6000");
-const CRASH_COOLDOWN_MS = Number(process.env.CRASH_COOLDOWN_MS ?? "4000");
-const CRASH_RATE_LIMIT_MS = Number(process.env.CRASH_RATE_LIMIT_MS ?? "500");
 const CRAFTWORLD_APP_VERSION = process.env.CRAFTWORLD_APP_VERSION || "1.6.2";
 const ERC20_READ_ABI = [
   "function name() view returns (string)",
@@ -85,12 +70,6 @@ const MASTERPIECE_POOL_ABI = [
   "function settleMarket(bytes32 betId, uint8 position, address[] winners, uint256[] payouts, uint256 houseTake, uint256 carryoverNext)",
   "function getPool(bytes32 betId) view returns (uint256)",
 ];
-const CRASH_VAULT_ABI = [
-  "function placeBet(bytes32 roundId, uint256 amount)",
-  "function cashout(bytes32 roundId, address user, uint256 payout)",
-  "function settleLoss(bytes32 roundId, address user)",
-  "function getStake(bytes32 roundId, address user) view returns (uint256)",
-];
 const roninProvider = new JsonRpcProvider(RONIN_RPC);
 const dynwRead = DYNW_TOKEN_ADDRESS ? new Contract(DYNW_TOKEN_ADDRESS, ERC20_READ_ABI, roninProvider) : null;
 const operatorSigner = OPERATOR_PRIVATE_KEY ? new Wallet(OPERATOR_PRIVATE_KEY, roninProvider) : null;
@@ -98,13 +77,6 @@ const masterpiecePoolContract =
   operatorSigner && MASTERPIECE_POOL_ADDRESS
     ? new Contract(MASTERPIECE_POOL_ADDRESS, MASTERPIECE_POOL_ABI, operatorSigner)
     : null;
-const crashVaultContract =
-  operatorSigner && CRASH_VAULT_ADDRESS ? new Contract(CRASH_VAULT_ADDRESS, CRASH_VAULT_ABI, operatorSigner) : null;
-const crashVaultReadContract =
-  CRASH_VAULT_ADDRESS ? new Contract(CRASH_VAULT_ADDRESS, CRASH_VAULT_ABI, roninProvider) : null;
-const authNonces = new Map();
-const crashBetCooldown = new Map();
-const crashCashoutCooldown = new Map();
 
 const MASTERPIECE_QUERY = `
   query Masterpiece($id: ID) {
@@ -134,15 +106,6 @@ const MASTERPIECE_QUERY = `
     }
   }
 `;
-
-function serializeCrashBet(bet) {
-  if (!bet) return bet;
-  return {
-    ...bet,
-    amountWei: bet.amountWei ? bet.amountWei.toString() : null,
-    payoutWei: bet.payoutWei ? bet.payoutWei.toString() : null,
-  };
-}
 
 async function fetchMasterpiece(id) {
   const jwt = process.env.CRAFTWORLD_JWT;
@@ -224,52 +187,6 @@ function buildBetId(masterpieceId, position) {
   return keccak256(toUtf8Bytes(`cw-bet:${masterpieceId}:${position}`));
 }
 
-function rateLimit(map, address) {
-  const now = Date.now();
-  const last = map.get(address) || 0;
-  if (now - last < CRASH_RATE_LIMIT_MS) {
-    return false;
-  }
-  map.set(address, now);
-  return true;
-}
-
-function getAuthToken(req) {
-  const header = req.headers.authorization || "";
-  if (header.startsWith("Bearer ")) return header.slice(7);
-  const cookieHeader = req.headers.cookie;
-  if (cookieHeader) {
-    const match = cookieHeader.split(";").map((c) => c.trim()).find((c) => c.startsWith("cw_session="));
-    if (match) return match.split("=")[1];
-  }
-  return null;
-}
-
-function requireAuth(req, res, next) {
-  const token = getAuthToken(req);
-  if (!token) return res.status(401).json({ error: "Missing auth token" });
-  if (!JWT_SECRET) return res.status(500).json({ error: "JWT_SECRET is not configured" });
-  try {
-    const payload = jwt.verify(token, JWT_SECRET);
-    if (!payload || typeof payload !== "object") {
-      return res.status(401).json({ error: "Invalid auth token" });
-    }
-    req.user = {
-      userId: payload.sub,
-      loginAddress: payload.loginAddress,
-    };
-    return next();
-  } catch (e) {
-    return res.status(401).json({ error: "Invalid auth token" });
-  }
-}
-
-function requireConfiguredEnv(required, message) {
-  if (!required) {
-    throw new Error(message);
-  }
-}
-
 function ensureWalletRecord(address) {
   const normalized = normalizeWallet(address);
   if (!normalized) return null;
@@ -329,166 +246,8 @@ function addLedgerEntry(address, entry) {
   return record;
 }
 
-const crashEngine = new CrashEngine({
-  io,
-  dataDir,
-  bettingMs: CRASH_BETTING_MS,
-  cooldownMs: CRASH_COOLDOWN_MS,
-  houseEdgeBps: CRASH_HOUSE_EDGE_BPS,
-  logger: console,
-  settleLoser: async (bet) => {
-    if (!crashVaultContract) {
-      console.warn("Crash vault not configured; skipping crash settlement");
-      return;
-    }
-    const betId = crashEngine.getRoundBetId();
-    const tx = await crashVaultContract.settleLoss(betId, bet.address);
-    const receipt = await tx.wait();
-    console.log("Crash loser settled:", tx.hash, receipt?.status ?? null);
-  },
-});
-
-io.on("connection", (socket) => {
-  socket.emit("crash:state", crashEngine.getPublicState());
-  socket.on("crash:state:request", () => {
-    socket.emit("crash:state", crashEngine.getPublicState());
-  });
-});
-
-crashEngine.start();
-
 // ---- API routes FIRST ----
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
-
-app.post("/api/auth/nonce", (req, res) => {
-  const address = normalizeWallet(req.body?.address);
-  if (!address) return res.status(400).json({ error: "address required" });
-  const nonce = crypto.randomBytes(16).toString("hex");
-  authNonces.set(address, { nonce, expiresAt: Date.now() + 5 * 60 * 1000 });
-  res.json({ nonce });
-});
-
-app.post("/api/auth/verify", async (req, res) => {
-  try {
-    requireConfiguredEnv(JWT_SECRET, "JWT_SECRET is not configured");
-    const address = normalizeWallet(req.body?.address);
-    const message = req.body?.message;
-    const signature = req.body?.signature;
-    if (!address || !message || !signature) {
-      return res.status(400).json({ error: "address, message, and signature are required" });
-    }
-    const record = authNonces.get(address);
-    if (!record || record.expiresAt < Date.now()) {
-      return res.status(400).json({ error: "nonce expired" });
-    }
-    if (!message.includes(record.nonce)) {
-      return res.status(400).json({ error: "nonce mismatch" });
-    }
-    if (!message.toLowerCase().includes(address.toLowerCase())) {
-      return res.status(400).json({ error: "message missing address" });
-    }
-    const signer = verifyMessage(message, signature);
-    if (normalizeWallet(signer) !== address) {
-      return res.status(401).json({ error: "signature does not match address" });
-    }
-    authNonces.delete(address);
-    const user = await getOrCreateUser(address);
-    const token = jwt.sign({ loginAddress: user.loginAddress }, JWT_SECRET, {
-      subject: user.id,
-      expiresIn: "7d",
-    });
-    res.json({ ok: true, address, token });
-  } catch (e) {
-    res.status(500).json({ error: String(e) });
-  }
-});
-
-app.get("/api/crash/state", (_req, res) => {
-  res.json(crashEngine.getPublicState());
-});
-
-app.post("/api/crash/bet", requireAuth, async (req, res) => {
-  try {
-    const address = normalizeWallet(req.user?.loginAddress);
-    if (!address) return res.status(400).json({ error: "Invalid user address" });
-    if (!rateLimit(crashBetCooldown, address)) {
-      return res.status(429).json({ error: "Too many requests" });
-    }
-    if (!crashVaultReadContract) {
-      return res.status(500).json({ error: "Crash vault not configured" });
-    }
-    if (!crashEngine.canBet(address)) {
-      return res.status(400).json({ error: "Betting is closed" });
-    }
-
-    const betId = crashEngine.getRoundBetId();
-    const stakeWei = BigInt(await crashVaultReadContract.getStake(betId, address));
-    if (stakeWei === 0n) {
-      return res.status(400).json({ error: "No on-chain stake found for this round" });
-    }
-
-    const amount = Number(formatUnits(stakeWei, DYNW_DECIMALS));
-    if (!Number.isFinite(amount) || amount < CRASH_MIN_BET || amount > CRASH_MAX_BET) {
-      return res.status(400).json({ error: "Bet amount outside allowed limits" });
-    }
-
-    const bet = crashEngine.registerBet({ address, amount, amountWei: stakeWei });
-    res.json({ ok: true, betId, bet: serializeCrashBet(bet) });
-  } catch (e) {
-    res.status(400).json({ error: String(e?.message || e) });
-  }
-});
-
-app.post("/api/crash/cashout", requireAuth, async (req, res) => {
-  try {
-    const address = normalizeWallet(req.user?.loginAddress);
-    if (!address) return res.status(400).json({ error: "Invalid user address" });
-    if (!rateLimit(crashCashoutCooldown, address)) {
-      return res.status(429).json({ error: "Too many requests" });
-    }
-    if (!crashVaultContract || !DYNW_TOKEN_ADDRESS || !CRASH_VAULT_ADDRESS) {
-      return res.status(500).json({ error: "Crash vault not configured" });
-    }
-
-    const round = crashEngine.round;
-    if (!round || round.phase !== "RUNNING") {
-      return res.status(400).json({ error: "Round is not running" });
-    }
-    const bet = round.bets.get(address);
-    if (!bet) return res.status(404).json({ error: "No active bet" });
-    if (bet.cashedOut) return res.status(400).json({ error: "Already cashed out" });
-    if (round.currentMultiplier >= round.crashPoint) {
-      return res.status(400).json({ error: "Round already crashed" });
-    }
-
-    const multiplier = round.currentMultiplier;
-    const multiplierFixed = BigInt(Math.round(multiplier * 10_000));
-    const payoutWei = (bet.amountWei * multiplierFixed) / 10_000n;
-
-    const betId = crashEngine.getRoundBetId();
-    if (dynwRead) {
-      const vaultBalance = BigInt(await dynwRead.balanceOf(CRASH_VAULT_ADDRESS));
-      if (vaultBalance < payoutWei) {
-        return res.status(400).json({ error: "Crash vault balance insufficient for payout" });
-      }
-    }
-    const tx = await crashVaultContract.cashout(betId, address, payoutWei);
-    const receipt = await tx.wait();
-    console.log("Crash cashout settled:", tx.hash, receipt?.status ?? null);
-
-    const payout = Number(formatUnits(payoutWei, DYNW_DECIMALS));
-    const updated = crashEngine.registerCashout({
-      address,
-      multiplier,
-      payout,
-      payoutWei,
-    });
-
-    res.json({ ok: true, payout, multiplier, txHash: tx.hash, bet: serializeCrashBet(updated) });
-  } catch (e) {
-    res.status(400).json({ error: String(e?.message || e) });
-  }
-});
 
 app.get("/api/masterpiece/:id", async (req, res) => {
   try {
@@ -593,55 +352,27 @@ async function validateBetPayload(body, loginAddress) {
   };
 }
 
-app.post("/api/bets/preview", requireAuth, async (req, res) => {
+app.post("/api/bets/preview", async (req, res) => {
   try {
-    const loginAddress = normalizeWallet(req.user?.loginAddress);
+    const loginAddress = normalizeWallet(req.body?.walletAddress);
     const validated = await validateBetPayload(req.body, loginAddress);
     if (validated.error) return res.status(400).json({ error: validated.error });
 
-    const validationId = newId();
-    validations.set(validationId, {
-      ...validated,
-      expiresAt: Date.now() + VALIDATION_TTL_MS,
-    });
-
-    res.json({ ok: true, pickedName: validated.pickedName, validationId, betId: validated.betId });
+    res.json({ ok: true, pickedName: validated.pickedName, betId: validated.betId });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
 });
 
-app.post("/api/bets", requireAuth, async (req, res) => {
+app.post("/api/bets", async (req, res) => {
   try {
-    const { validationId, txHash } = req.body || {};
+    const { txHash } = req.body || {};
     let validated = null;
-    const loginAddress = normalizeWallet(req.user?.loginAddress);
-    const userId = req.user?.userId || null;
+    const loginAddress = normalizeWallet(req.body?.walletAddress);
+    const userId = null;
     if (!loginAddress) return res.status(400).json({ error: "invalid login address" });
-
-    if (validationId) {
-      const record = validations.get(validationId);
-      if (!record) return res.status(400).json({ error: "validation expired or not found" });
-      if (record.expiresAt < Date.now()) {
-        validations.delete(validationId);
-        return res.status(400).json({ error: "validation expired" });
-      }
-      const payloadCheck = resolveAmounts({ amount: req.body?.amount });
-      if (payloadCheck.error) return res.status(400).json({ error: payloadCheck.error });
-      const matches =
-        record.user === loginAddress &&
-        record.masterpieceId === Number(req.body?.masterpieceId) &&
-        record.position === Number(req.body?.position) &&
-        record.pickedUid === req.body?.pickedUid &&
-        record.wagerAmount === payloadCheck.wagerAmount &&
-        record.betId === req.body?.betId;
-      if (!matches) return res.status(400).json({ error: "validation payload mismatch" });
-      validated = { ...record, ...payloadCheck };
-      validations.delete(validationId);
-    } else {
-      validated = await validateBetPayload(req.body, loginAddress);
-      if (validated.error) return res.status(400).json({ error: validated.error });
-    }
+    validated = await validateBetPayload(req.body, loginAddress);
+    if (validated.error) return res.status(400).json({ error: validated.error });
 
     const bet = {
       id: newId(),
